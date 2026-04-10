@@ -6,7 +6,10 @@ incremental data pipelines in Microsoft Fabric.
 """
 
 from datetime import datetime, timedelta
-from typing import Any, Optional
+from typing import Any, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pyspark.sql import SparkSession
 
 from fabric_utils.setup import setup_control_tables
 
@@ -26,7 +29,13 @@ class WatermarkManager:
         >>> wm.update_watermark("bronze.orders", new_max_value)
     """
     
-    def __init__(self, spark, lakehouse: str = None, schema: str = "control", table: str = "watermarks"):
+    def __init__(
+        self, 
+        spark: "SparkSession", 
+        lakehouse: Optional[str] = None, 
+        schema: str = "control", 
+        table: str = "watermarks"
+    ) -> None:
         """
         Initialize the WatermarkManager.
         

@@ -9,7 +9,10 @@ updates — while still exposing the raw components for power-user scenarios.
 import time
 import uuid
 from datetime import datetime
-from typing import List, Optional, Union
+from typing import List, Optional, Union, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pyspark.sql import SparkSession, DataFrame
 
 from fabric_utils.loader import (
     DeltaLoader,
@@ -71,15 +74,15 @@ class Pipeline:
 
     def __init__(
         self,
-        spark,
+        spark: "SparkSession",
         target_table: str,
         watermark_column: str,
         strategy: Union[WriteStrategy, str] = WriteStrategy.DELETE_APPEND,
         unique_key_cols: Optional[List[str]] = None,
         lookback_days: int = 90,
-        lakehouse: str = None,
+        lakehouse: Optional[str] = None,
         control_schema: str = "control",
-    ):
+    ) -> None:
         """
         Args:
             spark: Active SparkSession
@@ -118,7 +121,7 @@ class Pipeline:
 
         self._watermark = _NOT_RETRIEVED
 
-    def get_watermark(self):
+    def get_watermark(self) -> Optional[datetime]:
         """
         Retrieve the current watermark (with lookback applied).
 
@@ -163,7 +166,7 @@ class Pipeline:
 
     def execute(
         self,
-        source_df,
+        source_df: "DataFrame",
         new_watermark=None,
         run_id: Optional[str] = None,
     ) -> LoadResult:

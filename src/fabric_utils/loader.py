@@ -8,7 +8,10 @@ responsibility via WatermarkManager.
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import List, Optional
+from typing import List, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pyspark.sql import SparkSession, DataFrame
 
 
 class WriteStrategy(Enum):
@@ -66,10 +69,10 @@ class DeltaLoader:
     
     def __init__(
         self,
-        spark,
+        spark: "SparkSession",
         target_table: str,
         unique_key_cols: Optional[List[str]] = None,
-    ):
+    ) -> None:
         """
         Initialize the DeltaLoader.
         
@@ -82,7 +85,7 @@ class DeltaLoader:
         self.target_table = target_table
         self.unique_key_cols = unique_key_cols or []
     
-    def _validate_schema(self, source_df, strategy: WriteStrategy) -> None:
+    def _validate_schema(self, source_df: "DataFrame", strategy: WriteStrategy) -> None:
         """Validate that required columns exist in the source DataFrame."""
         if strategy == WriteStrategy.MERGE and self.unique_key_cols:
             source_cols = set(source_df.columns)
@@ -131,7 +134,7 @@ class DeltaLoader:
     
     def execute(
         self,
-        source_df,
+        source_df: "DataFrame",
         strategy: WriteStrategy,
         delete_predicate: Optional[str] = None,
         run_id: Optional[str] = None,

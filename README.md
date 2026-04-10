@@ -589,6 +589,41 @@ except LoaderError as e:
     print(f"Load failed: {e}")   # DELETE+APPEND auto-rolled back
 ```
 
+## Testing
+
+### Unit Tests
+
+Run unit tests locally with mocked SparkSession:
+
+```bash
+pip install pytest pyspark
+pytest tests/test_fabric_utils.py -v
+```
+
+Current test coverage: **38 passing unit tests**
+
+### Integration Tests
+
+Integration tests run with a local PySpark session and Delta Lake:
+
+```bash
+pip install pytest pyspark delta-spark
+pytest tests/integration_test_fabric_utils.py -v
+```
+
+These tests automatically run in CI/CD on every PR and push to main.
+
+Integration tests cover:
+- MERGE metrics and row counts validation
+- DELETE_APPEND automatic rollback with RESTORE TABLE
+
+**For Fabric Notebook Testing:**
+You can also run integration tests in a Fabric notebook with production Spark:
+```python
+from tests.integration_test_fabric_utils import run_all_integration_tests
+run_all_integration_tests(spark, lakehouse="lkhTest")
+```
+
 ## License
 
 MIT

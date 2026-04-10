@@ -1,0 +1,50 @@
+name: Build and Publish
+
+on:
+  push:
+    tags:
+      - 'v*'  # Trigger on version tags like v0.0.01, v0.1.0, etc.
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # Required to create releases
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    
+    - name: Install build dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install build
+    
+    - name: Build wheel
+      run: |
+        python -m build
+        ls -lh dist/
+    
+    - name: Extract version from tag
+      id: get-version
+      run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+    
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: dist/*
+        generate_release_notes: true
+        body: |
+          ## fabric-utils v${{ steps.get-version.outputs.VERSION }}
+          
+          See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details.
+          
+          ### Installation
+          
+          Download `fabric_utils-${{ steps.get-version.outputs.VERSION }}-py3-none-any.whl` and upload to your Fabric Environment.
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

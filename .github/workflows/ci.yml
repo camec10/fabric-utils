@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [ main ]
+  push:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.10", "3.11"]
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install build pytest pyspark delta-spark
+    
+    - name: Run unit tests
+      run: |
+        pytest tests/test_fabric_utils.py -v
+    
+    - name: Run integration tests
+      run: |
+        pytest tests/integration_test_fabric_utils.py -v
+    
+    - name: Check package builds
+      run: |
+        python -m build
+        ls -lh dist/

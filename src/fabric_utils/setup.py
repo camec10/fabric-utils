@@ -1,9 +1,18 @@
 """
 Setup utilities for control tables and schema initialization.
 """
+from typing import Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pyspark.sql import SparkSession
 
 
-def setup_control_tables(spark, lakehouse: str = None, schema: str = "control", silent: bool = False) -> None:
+def setup_control_tables(
+    spark: "SparkSession", 
+    lakehouse: Optional[str] = None, 
+    schema: str = "control", 
+    silent: bool = False
+) -> None:
     """
     Create control tables for watermark tracking.
     

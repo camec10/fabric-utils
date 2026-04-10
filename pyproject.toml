@@ -32,10 +32,15 @@ dev = [
     "pytest-cov>=4.0",
     "black>=23.0",
     "ruff>=0.1",
+    "pyspark>=3.5.0",
+    "delta-spark>=3.0.0",
 ]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/fabric_utils"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/fabric_utils/py.typed" = "fabric_utils/py.typed"
 
 [tool.black]
 line-length = 100
