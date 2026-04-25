@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "fabric-utils"
-version = "0.0.01"
+version = "0.0.02"
 description = "Data engineering utilities for Microsoft Fabric: watermarking, strategy assessment, Delta Lake loading, and CDF patterns"
 readme = "README.md"
 license = "MIT"

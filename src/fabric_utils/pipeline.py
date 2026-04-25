@@ -38,10 +38,11 @@ class Pipeline:
 
         pipe = Pipeline(
             spark,
-            target_table="bronze.time_entries",
+            target_table="lkhRaw.bronze.time_entries",
             watermark_column="lastUpdateDate",
             strategy=WriteStrategy.DELETE_APPEND,
             lookback_days=90,
+            control_lakehouse="lkhControl",
         )
 
         watermark = pipe.get_watermark()
@@ -57,11 +58,12 @@ class Pipeline:
 
         pipe = Pipeline(
             spark,
-            target_table="silver.repair_orders",
+            target_table="lkhRaw.silver.repair_orders",
             watermark_column="modifiedTimestamp",
             strategy=WriteStrategy.MERGE,
             unique_key_cols=["repairOrderId", "lineNumber"],
             lookback_days=30,
+            control_lakehouse="lkhControl",
         )
 
         watermark = pipe.get_watermark()
@@ -76,22 +78,30 @@ class Pipeline:
         watermark_column: str,
         strategy: Union[WriteStrategy, str] = WriteStrategy.DELETE_APPEND,
         unique_key_cols: Optional[List[str]] = None,
-        lookback_days: int = 90,
-        lakehouse: str = None,
+        lookback_days: int = 7,
+        control_lakehouse: str = None,
         control_schema: str = "control",
+        delta_options: Optional[dict] = None,
+        table_comment: Optional[str] = None,
+        column_comments: Optional[dict] = None,
     ):
         """
         Args:
             spark: Active SparkSession
-            target_table: Fully qualified Delta table (e.g., "bronze.orders")
+            target_table: Fully qualified Delta table (e.g., "lkhRaw.bronze.orders")
             watermark_column: Column used for incremental tracking
             strategy: Write strategy for subsequent runs (first run always FULL_REFRESH).
                       Can be a WriteStrategy enum or string ("DELETE_APPEND", "MERGE", "FULL_REFRESH").
                       Strings are case-insensitive.
             unique_key_cols: Key columns for MERGE (required when strategy is MERGE)
             lookback_days: Days to subtract from watermark for late-arriving data
-            lakehouse: Lakehouse name (e.g., "lkhRaw"). If None, uses default attached lakehouse.
+            control_lakehouse: Lakehouse name for control tables (e.g., "lkhControl"). If None, uses default attached lakehouse.
             control_schema: Schema for control tables (default: "control")
+            delta_options: Dictionary of Delta table options to apply during FULL_REFRESH writes
+                          (e.g., {"delta.enableChangeDataFeed": "true"}). Defaults to None.
+            table_comment: Optional description/comment for the table (e.g., "Bronze layer orders from ERP")
+            column_comments: Optional dictionary mapping column names to descriptions
+                            (e.g., {"order_id": "Unique order identifier", "amount": "Order total in USD"})
         """
         # Convert string strategy to enum if needed
         if isinstance(strategy, str):
@@ -109,12 +119,19 @@ class Pipeline:
         self.target_table = target_table
         self.watermark_column = watermark_column
         self.lookback_days = lookback_days
-        self.lakehouse = lakehouse
+        self.control_lakehouse = control_lakehouse
         self.control_schema = control_schema
 
         # Compose — not inherit
-        self.wm = WatermarkManager(spark, lakehouse=lakehouse, schema=control_schema)
-        self.loader = DeltaLoader(spark, target_table, unique_key_cols)
+        self.wm = WatermarkManager(spark, control_lakehouse=control_lakehouse, schema=control_schema)
+        self.loader = DeltaLoader(
+            spark,
+            target_table,
+            unique_key_cols,
+            delta_options=delta_options,
+            table_comment=table_comment,
+            column_comments=column_comments,
+        )
 
         self._watermark = _NOT_RETRIEVED
 
@@ -298,3 +315,32 @@ class Pipeline:
                 error_message=str(e),
             )
             raise
+    
+    def ensure_table_properties(self) -> None:
+        """
+        Ensure delta_options, table comment, and column comments are applied.
+        
+        Call this after pipeline execution to apply properties and comments to an existing table,
+        or to verify they are set correctly.
+        
+        Example:
+            >>> pipe = Pipeline(
+            ...     spark,
+            ...     target_table="bronze.orders",
+            ...     strategy=WriteStrategy.MERGE,
+            ...     unique_key_cols=["order_id"],
+            ...     watermark_column="modified_at",
+            ...     delta_options={
+            ...         "delta.autoOptimize.optimizeWrite": "true",
+            ...         "delta.autoOptimize.autoCompact": "true",
+            ...     },
+            ...     table_comment="Bronze layer orders from ERP system",
+            ...     column_comments={
+            ...         "order_id": "Unique order identifier",
+            ...         "amount": "Order total in USD",
+            ...     }
+            ... )
+            >>> # After first run or to fix existing table
+            >>> pipe.ensure_table_properties()
+        """
+        self.loader.ensure_table_properties()

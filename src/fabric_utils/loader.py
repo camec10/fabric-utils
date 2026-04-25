@@ -69,6 +69,9 @@ class DeltaLoader:
         spark,
         target_table: str,
         unique_key_cols: Optional[List[str]] = None,
+        delta_options: Optional[dict] = None,
+        table_comment: Optional[str] = None,
+        column_comments: Optional[dict] = None,
     ):
         """
         Initialize the DeltaLoader.
@@ -77,10 +80,18 @@ class DeltaLoader:
             spark: Active SparkSession
             target_table: Target Delta table (e.g., "bronze.orders")
             unique_key_cols: Columns that uniquely identify a row (required for MERGE)
+            delta_options: Dictionary of Delta table options to apply during FULL_REFRESH writes
+                          (e.g., {"delta.enableChangeDataFeed": "true"}). Defaults to None.
+            table_comment: Optional description/comment for the table (e.g., "Bronze layer orders from ERP")
+            column_comments: Optional dictionary mapping column names to descriptions
+                            (e.g., {"order_id": "Unique order identifier", "amount": "Order total in USD"})
         """
         self.spark = spark
         self.target_table = target_table
         self.unique_key_cols = unique_key_cols or []
+        self.delta_options = delta_options or {}
+        self.table_comment = table_comment
+        self.column_comments = column_comments or {}
     
     def _validate_schema(self, source_df, strategy: WriteStrategy) -> None:
         """Validate that required columns exist in the source DataFrame."""
@@ -129,6 +140,70 @@ class DeltaLoader:
             f"RESTORE TABLE {self.target_table} TO VERSION AS OF {version}"
         )
     
+    def _apply_table_properties(self) -> None:
+        """Apply delta_options as persistent table properties using ALTER TABLE."""
+        if not self.delta_options:
+            return
+        
+        # Build SET TBLPROPERTIES statement
+        props = ", ".join([f"'{key}' = '{value}'" for key, value in self.delta_options.items()])
+        self.spark.sql(f"""
+            ALTER TABLE {self.target_table}
+            SET TBLPROPERTIES ({props})
+        """)
+    
+    def _apply_table_comment(self) -> None:
+        """Apply table comment if provided."""
+        if not self.table_comment:
+            return
+        
+        # Escape single quotes in comment
+        escaped_comment = self.table_comment.replace("'", "\\'").replace('"', '\\"')
+        self.spark.sql(f"""
+            COMMENT ON TABLE {self.target_table} IS '{escaped_comment}'
+        """)
+    
+    def _apply_column_comments(self) -> None:
+        """Apply column comments if provided."""
+        if not self.column_comments:
+            return
+        
+        for column, comment in self.column_comments.items():
+            # Escape single quotes in comment
+            escaped_comment = comment.replace("'", "\\'").replace('"', '\\"')
+            self.spark.sql(f"""
+                ALTER TABLE {self.target_table}
+                ALTER COLUMN {column} COMMENT '{escaped_comment}'
+            """)
+    
+    def ensure_table_properties(self) -> None:
+        """
+        Ensure delta_options, table comment, and column comments are applied.
+        
+        Call this method to apply properties and comments to an existing table,
+        or to verify they are set after table creation.
+        
+        Example:
+            >>> loader = DeltaLoader(
+            ...     spark=spark,
+            ...     target_table="bronze.orders",
+            ...     delta_options={
+            ...         "delta.autoOptimize.optimizeWrite": "true",
+            ...         "delta.autoOptimize.autoCompact": "true",
+            ...     },
+            ...     table_comment="Bronze layer orders from ERP system",
+            ...     column_comments={
+            ...         "order_id": "Unique order identifier from source system",
+            ...         "amount": "Order total amount in USD",
+            ...         "created_at": "Timestamp when order was created",
+            ...     }
+            ... )
+            >>> loader.ensure_table_properties()  # Apply to existing table
+        """
+        self._apply_table_properties()
+        self._apply_table_comment()
+        self._apply_column_comments()
+    
     def execute(
         self,
         source_df,
@@ -167,7 +242,14 @@ class DeltaLoader:
         self._ensure_schema_exists()
         
         # Check for initial load
-        is_initial = not self.spark.catalog.tableExists(self.target_table)
+        # Wrap in try/except because tableExists() can fail if SparkSession
+        # isn't fully initialized or if catalog metadata isn't available
+        try:
+            is_initial = not self.spark.catalog.tableExists(self.target_table)
+        except Exception as e:
+            # Treat as initial load if we can't determine table existence
+            print(f"Note: Could not check if table exists ({e}), treating as initial load")
+            is_initial = True
         
         # Snapshot version for DELETE+APPEND rollback
         restore_version = None
@@ -175,9 +257,9 @@ class DeltaLoader:
             restore_version = self._get_delta_version()
         
         # Add pipeline metadata
-        source_df = source_df.withColumn("_pipelineRunTs", F.current_timestamp())
+        source_df = source_df.withColumn("pipelineRunTimestamp", F.current_timestamp())
         if run_id:
-            source_df = source_df.withColumn("_pipelineRunId", F.lit(run_id))
+            source_df = source_df.withColumn("pipelineRunId", F.lit(run_id))
         
         rows_inserted = 0
         rows_updated = 0
@@ -193,6 +275,12 @@ class DeltaLoader:
                     .option("overwriteSchema", "true")
                     .saveAsTable(self.target_table)
                 )
+                
+                # Apply delta_options, table comment, and column comments as persistent metadata
+                # This ensures they apply to all future operations automatically
+                self._apply_table_properties()
+                self._apply_table_comment()
+                self._apply_column_comments()
                 
             elif strategy == WriteStrategy.DELETE_APPEND:
                 # Count source rows BEFORE deleting anything

@@ -3,26 +3,26 @@ Setup utilities for control tables and schema initialization.
 """
 
 
-def setup_control_tables(spark, lakehouse: str = None, schema: str = "control", silent: bool = False) -> None:
+def setup_control_tables(spark, control_lakehouse: str = None, schema: str = "control", silent: bool = False) -> None:
     """
     Create control tables for watermark tracking.
     
     Creates the following tables:
-    - {lakehouse}.{schema}.watermarks — Timestamp-based watermark tracking
-    - {lakehouse}.{schema}.pipelineRuns — Pipeline execution audit log
+    - {control_lakehouse}.{schema}.watermarks — Timestamp-based watermark tracking
+    - {control_lakehouse}.{schema}.pipelineRuns — Pipeline execution audit log
     
     Args:
         spark: Active SparkSession
-        lakehouse: Lakehouse name (e.g., "lkhRaw"). If None, uses default attached lakehouse.
+        control_lakehouse: Lakehouse name for control tables (e.g., "lkhControl"). If None, uses default attached lakehouse.
         schema: Schema name for control tables (default: "control")
         silent: If True, suppresses print output (used for auto-creation)
         
     Example:
         >>> from fabric_utils import setup_control_tables
-        >>> setup_control_tables(spark, lakehouse="lkhRaw", schema="control")
+        >>> setup_control_tables(spark, control_lakehouse="lkhControl", schema="control")
     """
     # Build fully qualified schema name
-    full_schema = f"{lakehouse}.{schema}" if lakehouse else schema
+    full_schema = f"{control_lakehouse}.{schema}" if control_lakehouse else schema
     
     # Create schema if not exists
     spark.sql(f"CREATE SCHEMA IF NOT EXISTS {full_schema}")

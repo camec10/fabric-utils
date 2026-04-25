@@ -15,7 +15,7 @@ from fabric_utils.loader import (
 from fabric_utils.pipeline import Pipeline
 from fabric_utils.setup import setup_control_tables
 
-__version__ = "0.0.01"
+__version__ = "0.0.02"
 
 __all__ = [
     "WatermarkManager",

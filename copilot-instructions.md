@@ -94,6 +94,52 @@ Output: `dist/fabric_utils-{version}-py3-none-any.whl`
 1. Upload wheel to Fabric Lakehouse Files
 2. Attach to Fabric Environment → Public Libraries → Custom
 
+## Documentation Maintenance
+
+### When to Update Documentation
+**ALWAYS update documentation when:**
+- Adding new parameters to public APIs (Pipeline, DeltaLoader, WatermarkManager)
+- Adding new public methods or functions
+- Changing behavior of existing features (even if backward compatible)
+- Fixing bugs that users might have worked around
+- Deprecating features or parameters
+
+### Documentation Update Checklist
+For every **major feature change**, update the following in order:
+
+1. **CHANGELOG.md** (REQUIRED)
+   - Add entry under `[Unreleased]` section
+   - Use categories: Added, Changed, Deprecated, Removed, Fixed, Security
+   - Include code examples for new features
+   - Document breaking changes prominently
+   - Follow [Keep a Changelog](https://keepachangelog.com/) format
+
+2. **README.md** (REQUIRED)
+   - Update "What's New" section with version and feature summary
+   - Add/update code examples showing new parameters or methods
+   - Update "Quick Start" if it demonstrates the new feature
+   - Update "Component Reference" for API changes
+   - Add new sections for major features (e.g., "Table Metadata & Documentation")
+   - Update installation instructions if wheel name changes
+
+3. **Version Bump** (REQUIRED for releases)
+   - Update `pyproject.toml` version
+   - Update `src/fabric_utils/__init__.py` `__version__`
+   - Move `[Unreleased]` in CHANGELOG.md to versioned section on release
+
+4. **Tests** (REQUIRED)
+   - Add tests for new functionality
+   - Update test count in README.md if changed
+   - Update coverage percentage in README.md
+
+### Documentation Style
+- Use **code fences** with language hints: ```python
+- Include **realistic examples** with business context
+- Add **comments** explaining WHY, not just WHAT
+- Show **both simple and advanced usage** patterns
+- Document **failure scenarios** and error messages
+- Use **bold** for emphasis, `backticks` for code symbols
+
 ## Common Tasks
 
 ### Adding a New Write Strategy
@@ -107,12 +153,12 @@ Check these 3 locations for consistency:
 - `pipeline.py` — delete predicate construction
 - `watermark.py` — `build_where_clause()` and `update_watermark()`
 
-### Updating README for New Version
-Add release notes at top of "What's New" section, following existing format:
-```markdown
-### v0.X.Y — Brief Title (Month Year)
-- **CATEGORY**: Description of change
-```
+### Adding New Features
+When adding major features:
+1. Implement the feature with tests
+2. Follow the **Documentation Maintenance** checklist above
+3. Update CHANGELOG.md and README.md before marking work complete
+4. Rebuild the wheel with updated version
 
 ## Known Gotchas
 

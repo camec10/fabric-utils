@@ -4,6 +4,28 @@ Data engineering utilities for Microsoft Fabric — watermarking, incremental lo
 
 ## What's New
 
+### v0.0.02 — Documentation & Metadata (April 2026)
+
+Enhanced table metadata support for better data governance and documentation.
+
+**New Features**
+- **Table Comments**: Add descriptions to tables via `table_comment` parameter
+- **Column Comments**: Document column meanings via `column_comments` dictionary
+- **Persistent Table Properties**: `delta_options` now applied as permanent table metadata via `ALTER TABLE`
+- **Metadata Management**: New `ensure_table_properties()` method to apply metadata to existing tables
+
+**Changes**
+- **Delta Options**: Now applied as persistent table properties (via `ALTER TABLE SET TBLPROPERTIES`) instead of write-time options
+- Properties like `delta.autoOptimize.optimizeWrite` now persist automatically across all future writes
+
+**Benefits**
+- Self-documenting tables with clear business context
+- Improved data governance and team collaboration
+- Table properties prevent Spark job hangs from small file problems
+- Retroactive metadata updates for existing tables
+
+See [CHANGELOG.md](CHANGELOG.md) for full details.
+
 ### v0.0.01 — Initial Release (April 2026)
 
 Production-ready utilities for incremental data loading in Microsoft Fabric with comprehensive safety features.
@@ -28,7 +50,7 @@ Production-ready utilities for incremental data loading in Microsoft Fabric with
 - Unpartitioned `pipelineRuns` table eliminates concurrency conflicts
 - Simplified control schema (watermarks + pipelineRuns only)
 - Independent, single-responsibility components
-- Full test coverage (38 passing tests)
+- Full test coverage (55 passing tests, 81% coverage)
 
 ## Installation
 
@@ -40,7 +62,7 @@ Production-ready utilities for incremental data loading in Microsoft Fabric with
    python -m build
    ```
 
-2. Upload `dist/fabric_utils-0.0.01-py3-none-any.whl` to your Fabric Lakehouse Files
+2. Upload `dist/fabric_utils-0.0.02-py3-none-any.whl` to your Fabric Lakehouse Files
 
 3. Attach to your Fabric Environment:
    - Go to Environment settings → Public Libraries → Custom
@@ -50,6 +72,104 @@ Production-ready utilities for incremental data loading in Microsoft Fabric with
 
 ```bash
 pip install -e ".[dev]"
+```
+
+## Quick Start
+
+### Basic Pipeline with Documentation
+
+```python
+from fabric_utils import Pipeline, WriteStrategy
+from pyspark.sql import functions as F
+
+pipe = Pipeline(
+    spark,
+    target_table="bronze.orders",
+    watermark_column="modified_at",
+    strategy=WriteStrategy.DELETE_APPEND,
+    lookback_days=90,
+    # New in v0.0.02: Table documentation
+    table_comment="Bronze layer orders from SAP ERP. Loaded daily at 2am UTC via incremental sync.",
+    column_comments={
+        "order_id": "Unique order identifier from SAP VBAK.VBELN",
+        "customer_id": "Foreign key to customers table (SAP KNA1.KUNNR)",
+        "amount": "Order total amount in USD",
+        "modified_at": "Watermark column - last modification timestamp from source",
+        "pipelineRunId": "Lineage metadata - links to control.pipelineRuns",
+    },
+    # Optimize for production workloads
+    delta_options={
+        "delta.autoOptimize.optimizeWrite": "true",  # Coalesce small files during writes
+        "delta.autoOptimize.autoCompact": "true",    # Background compaction
+        "delta.enableChangeDataFeed": "true",        # Enable CDC for downstream consumers
+    },
+)
+
+# Get watermark (None on first run)
+watermark = pipe.get_watermark()
+
+# Extract from source
+if watermark:
+    source_df = spark.sql(f"""
+        SELECT * FROM raw.sap_orders
+        WHERE modified_at >= '{watermark}'
+    """)
+else:
+    source_df = spark.table("raw.sap_orders")
+
+# Transform
+transformed = source_df.withColumn("loaded_at", F.current_timestamp())
+
+# Load + update watermark atomically
+result = pipe.execute(transformed)
+print(f"✓ {result.rows_inserted:,} inserted, {result.rows_deleted:,} deleted")
+```
+
+**What happens automatically:**
+- First run: FULL_REFRESH strategy, table comment and column comments applied
+- Subsequent runs: DELETE_APPEND strategy as configured
+- Table properties (autoOptimize, etc.) persist across all writes
+- Execution logged to `control.pipelineRuns` for auditing
+- Row-level lineage via `pipelineRunId` column
+
+### Apply Metadata to Existing Tables
+
+If you have existing tables and want to add documentation or properties:
+
+```python
+pipe = Pipeline(
+    spark,
+    target_table="bronze.orders",
+    watermark_column="modified_at",
+    strategy=WriteStrategy.DELETE_APPEND,
+    table_comment="Updated description for existing table",
+    column_comments={
+        "order_id": "Primary key",
+        "amount": "Order total in USD",
+    },
+    delta_options={
+        "delta.autoOptimize.optimizeWrite": "true",
+        "delta.autoOptimize.autoCompact": "true",
+    },
+)
+
+# Apply metadata without running a pipeline
+pipe.ensure_table_properties()
+```
+
+This runs:
+- `ALTER TABLE bronze.orders SET TBLPROPERTIES (...)`
+- `COMMENT ON TABLE bronze.orders IS '...'`
+- `ALTER TABLE bronze.orders ALTER COLUMN ... COMMENT '...'`
+
+### Verify Metadata
+
+```python
+# View table properties
+spark.sql("SHOW TBLPROPERTIES bronze.orders").show(100, False)
+
+# View table and column comments
+spark.sql("DESCRIBE EXTENDED bronze.orders").show(100, False)
 ```
 
 ## Architecture
@@ -434,7 +554,29 @@ wm.log_pipeline_run(
 ```python
 from fabric_utils import DeltaLoader, WriteStrategy
 
-loader = DeltaLoader(spark, target_table="bronze.orders", unique_key_cols=["order_id"])
+# Basic initialization
+loader = DeltaLoader(
+    spark, 
+    target_table="bronze.orders", 
+    unique_key_cols=["order_id"],
+)
+
+# With metadata and optimization (new in v0.0.02)
+loader = DeltaLoader(
+    spark,
+    target_table="bronze.orders",
+    unique_key_cols=["order_id"],
+    delta_options={
+        "delta.autoOptimize.optimizeWrite": "true",
+        "delta.autoOptimize.autoCompact": "true",
+        "delta.enableChangeDataFeed": "true",
+    },
+    table_comment="Bronze layer orders from ERP system",
+    column_comments={
+        "order_id": "Unique order identifier",
+        "amount": "Order total in USD",
+    },
+)
 
 # Full refresh (initial load or reset)
 result = loader.execute(source_df, strategy=WriteStrategy.FULL_REFRESH)
@@ -448,7 +590,114 @@ result = loader.execute(
 
 # Merge (matched rows update, unmatched rows insert)
 result = loader.execute(source_df, strategy=WriteStrategy.MERGE)
+
+# Apply metadata to existing table
+loader.ensure_table_properties()
 ```
+
+**About `delta_options`** (Changed in v0.0.02):
+- Applied as **persistent table properties** via `ALTER TABLE SET TBLPROPERTIES`
+- Properties automatically apply to **all future writes** (not just the current write)
+- Useful for:
+  - `delta.autoOptimize.optimizeWrite`: Prevent small file problems
+  - `delta.autoOptimize.autoCompact`: Background file compaction
+  - `delta.enableChangeDataFeed`: Enable CDC for downstream consumers
+  - `delta.logRetentionDuration`: Control metadata retention
+  - `delta.deletedFileRetentionDuration`: Control time travel window
+```
+
+---
+
+### Table Metadata & Documentation
+
+**New in v0.0.02**: Add table and column comments for better data governance and team collaboration.
+
+#### Why Document Your Tables?
+
+- **Self-Service Analytics**: New team members understand data without hunting for docs
+- **Data Governance**: Clear ownership, source systems, and update schedules
+- **Compliance**: Document PII, data classification, and retention policies
+- **Lineage**: Link tables to source systems and business processes
+
+#### Adding Comments
+
+**At Pipeline Creation:**
+```python
+pipe = Pipeline(
+    spark,
+    target_table="bronze.orders",
+    watermark_column="modified_at",
+    strategy=WriteStrategy.DELETE_APPEND,
+    table_comment=(
+        "Bronze layer orders from SAP ERP (VBAK table). "
+        "Loaded daily at 2am UTC via incremental sync with 90-day lookback. "
+        "Owner: data-engineering@company.com"
+    ),
+    column_comments={
+        # Business keys
+        "order_id": "Unique order identifier from SAP VBAK.VBELN (Primary Key)",
+        "customer_id": "Foreign key to customers table (SAP KNA1.KUNNR)",
+        
+        # Business data
+        "amount": "Order total amount in USD. Excludes tax and shipping.",
+        "status": "Order status: PENDING, PROCESSING, COMPLETED, CANCELLED",
+        "order_date": "Date order was placed by customer",
+        
+        # Lineage and audit
+        "modified_at": "Watermark column - last modification timestamp from source system",
+        "pipelineRunId": "Links to control.pipelineRuns for execution lineage",
+        "pipelineRunTimestamp": "When this row was last loaded",
+        
+        # Data classification
+        "customer_email": "[PII] Customer email address - handle per GDPR requirements",
+    },
+)
+```
+
+**For Existing Tables:**
+```python
+# Define metadata
+loader = DeltaLoader(
+    spark,
+    target_table="bronze.existing_table",
+    table_comment="Updated description with business context",
+    column_comments={
+        "id": "Primary key",
+        "sensitive_field": "[PII] Handle per compliance policy",
+    },
+)
+
+# Apply without running a full pipeline
+loader.ensure_table_properties()
+```
+
+#### Special Characters in Comments
+
+The library automatically escapes quotes and special characters:
+```python
+pipe = Pipeline(
+    ...,
+    table_comment="Orders from customer's ERP system (\"SAP\")",  # Quotes handled automatically
+    column_comments={
+        "notes": "Customer's order notes - may contain 'quotes' and \"symbols\"",
+    }
+)
+```
+
+#### Viewing Comments
+
+```sql
+-- Table comment and metadata
+DESCRIBE EXTENDED bronze.orders;
+
+-- All column names and comments
+DESCRIBE TABLE bronze.orders;
+
+-- Just table properties
+SHOW TBLPROPERTIES bronze.orders;
+```
+
+---
 
 ### Choosing the Right Write Strategy
 
@@ -588,6 +837,20 @@ except SchemaValidationError as e:
 except LoaderError as e:
     print(f"Load failed: {e}")   # DELETE+APPEND auto-rolled back
 ```
+
+## Contributing
+
+Contributions are welcome! Please:
+1. Fork the repository
+2. Create a feature branch
+3. Add tests for new functionality
+4. Ensure all tests pass: `pytest tests/ -v`
+5. Update documentation and CHANGELOG.md
+6. Submit a pull request
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for a detailed history of changes, including breaking changes, new features, and bug fixes.
 
 ## License
 

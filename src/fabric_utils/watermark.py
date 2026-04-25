@@ -19,33 +19,33 @@ class WatermarkManager:
     or incrementing ID) to enable efficient incremental loading.
     
     Example:
-        >>> wm = WatermarkManager(spark, lakehouse="lkhRaw", schema="control")
+        >>> wm = WatermarkManager(spark, control_lakehouse="lkhControl", schema="control")
         >>> watermark = wm.get_watermark("bronze.orders", lookback_days=90)
         >>> if watermark:
         ...     df = spark.sql(f"SELECT * FROM source WHERE modified_at >= '{watermark}'")
         >>> wm.update_watermark("bronze.orders", new_max_value)
     """
     
-    def __init__(self, spark, lakehouse: str = None, schema: str = "control", table: str = "watermarks"):
+    def __init__(self, spark, control_lakehouse: str = None, schema: str = "control", table: str = "watermarks"):
         """
         Initialize the WatermarkManager.
         
         Args:
             spark: Active SparkSession (provided by Fabric runtime)
-            lakehouse: Lakehouse name (e.g., "lkhRaw"). If None, uses default attached lakehouse.
+            control_lakehouse: Lakehouse name for control tables (e.g., "lkhControl"). If None, uses default attached lakehouse.
             schema: Schema name for control table (default: "control")
             table: Control table name (default: "watermarks")
         """
         self.spark = spark
-        self.lakehouse = lakehouse
+        self.control_lakehouse = control_lakehouse
         self.schema = schema
         self.table_name = table
         
         # Build fully qualified table name for Fabric
-        # Format: lakehouse.schema.table (3-part) or schema.table (2-part if no lakehouse)
-        if lakehouse:
-            self.control_table = f"{lakehouse}.{schema}.{table}"
-            self.full_schema = f"{lakehouse}.{schema}"
+        # Format: control_lakehouse.schema.table (3-part) or schema.table (2-part if no control_lakehouse)
+        if control_lakehouse:
+            self.control_table = f"{control_lakehouse}.{schema}.{table}"
+            self.full_schema = f"{control_lakehouse}.{schema}"
         else:
             self.control_table = f"{schema}.{table}"
             self.full_schema = schema
@@ -61,7 +61,7 @@ class WatermarkManager:
         Delegates to setup_control_tables() for the actual table creation.
         """
         try:
-            setup_control_tables(self.spark, lakehouse=self.lakehouse, schema=self.schema, silent=True)
+            setup_control_tables(self.spark, control_lakehouse=self.control_lakehouse, schema=self.schema, silent=True)
         except Exception as e:
             # Only ignore if tables already exist
             if "already exists" not in str(e).lower():
@@ -283,8 +283,8 @@ class WatermarkManager:
         import time
         
         # Build fully qualified table name for pipelineRuns
-        if self.lakehouse:
-            full_table = f"{self.lakehouse}.{self.schema}.pipelineRuns"
+        if self.control_lakehouse:
+            full_table = f"{self.control_lakehouse}.{self.schema}.pipelineRuns"
         else:
             full_table = f"{self.schema}.pipelineRuns"
         

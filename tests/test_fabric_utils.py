@@ -20,10 +20,57 @@ class TestWatermarkManager:
         mock_spark = MagicMock()
         mock_spark.sql.return_value.collect.return_value = []
         
-        wm = WatermarkManager(mock_spark, "control.watermarks")
+        wm = WatermarkManager(mock_spark, schema="control")
         result = wm.get_watermark("bronze.orders")
         
         assert result is None
+    
+    def test_control_lakehouse_two_part_table_name(self):
+        """Control lakehouse with 2-part data table name."""
+        from fabric_utils import WatermarkManager
+        
+        mock_spark = MagicMock()
+        mock_spark.sql.return_value.collect.return_value = []
+        
+        # Control tables in separate lakehouse, data in default lakehouse
+        wm = WatermarkManager(mock_spark, control_lakehouse="lkhControl", schema="control")
+        
+        # Should build control_table as lkhControl.control.watermarks
+        assert wm.control_table == "lkhControl.control.watermarks"
+        assert wm.control_lakehouse == "lkhControl"
+        
+        # Data table can still be 2-part
+        result = wm.get_watermark("bronze.orders")
+        assert result is None
+    
+    def test_control_lakehouse_three_part_table_name(self):
+        """Control lakehouse with 3-part data table name."""
+        from fabric_utils import WatermarkManager
+        
+        mock_spark = MagicMock()
+        mock_spark.sql.return_value.collect.return_value = []
+        
+        # Control tables in lkhControl, data in lkhRaw
+        wm = WatermarkManager(mock_spark, control_lakehouse="lkhControl", schema="control")
+        
+        assert wm.control_table == "lkhControl.control.watermarks"
+        
+        # Data table is 3-part, separate from control
+        result = wm.get_watermark("lkhRaw.bronze.orders")
+        assert result is None
+    
+    def test_no_control_lakehouse_uses_default(self):
+        """When control_lakehouse is None, use default attached lakehouse."""
+        from fabric_utils import WatermarkManager
+        
+        mock_spark = MagicMock()
+        mock_spark.sql.return_value.collect.return_value = []
+        
+        wm = WatermarkManager(mock_spark, control_lakehouse=None, schema="control")
+        
+        # Should build 2-part name without lakehouse prefix
+        assert wm.control_table == "control.watermarks"
+        assert wm.control_lakehouse is None
     
     def test_get_watermark_applies_lookback(self):
         """Lookback should subtract days from watermark."""
@@ -751,6 +798,139 @@ class TestPipeline:
         
         assert pipe.strategy == WriteStrategy.MERGE
 
+    @patch.dict("sys.modules", {
+        "pyspark": MagicMock(),
+        "pyspark.sql": MagicMock(),
+        "pyspark.sql.functions": MagicMock(),
+    })
+    def test_control_lakehouse_two_part_data_table(self):
+        """Pipeline with control_lakehouse and 2-part data table name."""
+        from fabric_utils import Pipeline, WriteStrategy
+
+        mock_spark = MagicMock()
+        mock_spark.sql.return_value.collect.return_value = []
+        mock_spark.catalog.tableExists.return_value = False
+
+        # Data in default lakehouse (2-part), control in separate lakehouse
+        pipe = Pipeline(
+            mock_spark,
+            target_table="bronze.orders",  # 2-part: uses default lakehouse
+            watermark_column="modified_at",
+            control_lakehouse="lkhControl",
+        )
+
+        assert pipe.target_table == "bronze.orders"
+        assert pipe.control_lakehouse == "lkhControl"
+        assert pipe.wm.control_table == "lkhControl.control.watermarks"
+        
+        pipe.get_watermark()
+
+        # Verify watermark query uses control lakehouse
+        sql_calls = [str(c) for c in mock_spark.sql.call_args_list]
+        watermark_queries = [c for c in sql_calls if "lkhControl.control.watermarks" in c]
+        assert len(watermark_queries) > 0, "Watermark queries should use control lakehouse"
+
+    @patch.dict("sys.modules", {
+        "pyspark": MagicMock(),
+        "pyspark.sql": MagicMock(),
+        "pyspark.sql.functions": MagicMock(),
+    })
+    def test_control_lakehouse_three_part_data_table(self):
+        """Pipeline with control_lakehouse and 3-part data table name."""
+        from fabric_utils import Pipeline, WriteStrategy
+
+        mock_spark = MagicMock()
+        mock_spark.sql.return_value.collect.return_value = []
+        mock_spark.catalog.tableExists.return_value = False
+
+        # Data in lkhRaw (3-part), control in lkhControl
+        pipe = Pipeline(
+            mock_spark,
+            target_table="lkhRaw.bronze.orders",  # 3-part: explicit lakehouse
+            watermark_column="modified_at",
+            control_lakehouse="lkhControl",
+            strategy=WriteStrategy.MERGE,
+            unique_key_cols=["order_id"],
+        )
+
+        assert pipe.target_table == "lkhRaw.bronze.orders"
+        assert pipe.control_lakehouse == "lkhControl"
+        assert pipe.wm.control_table == "lkhControl.control.watermarks"
+        
+        pipe.get_watermark()
+
+        # Verify separation: watermarks in lkhControl, data in lkhRaw
+        sql_calls = [str(c) for c in mock_spark.sql.call_args_list]
+        watermark_queries = [c for c in sql_calls if "lkhControl.control.watermarks" in c]
+        assert len(watermark_queries) > 0, "Watermark queries should use lkhControl"
+        
+        # Target table references should use lkhRaw
+        assert pipe.loader.target_table == "lkhRaw.bronze.orders"
+
+    @patch.dict("sys.modules", {
+        "pyspark": MagicMock(),
+        "pyspark.sql": MagicMock(),
+        "pyspark.sql.functions": MagicMock(),
+    })
+    def test_pipeline_logging_uses_control_lakehouse(self):
+        """Pipeline run logging should use control lakehouse."""
+        from fabric_utils import Pipeline, WriteStrategy
+
+        mock_spark = MagicMock()
+        mock_spark.sql.return_value.collect.return_value = []
+        mock_spark.catalog.tableExists.return_value = False
+
+        pipe = Pipeline(
+            mock_spark,
+            target_table="lkhRaw.bronze.orders",
+            watermark_column="modified_at",
+            control_lakehouse="lkhControl",
+        )
+
+        pipe.get_watermark()
+
+        mock_df = MagicMock()
+        mock_df.columns = ["modified_at", "amount"]
+        mock_df.withColumn.return_value = mock_df
+        mock_df.count.return_value = 10
+
+        result = pipe.execute(mock_df, new_watermark=datetime(2024, 7, 1))
+
+        # Verify pipelineRuns logging uses control lakehouse
+        sql_calls = [str(c) for c in mock_spark.sql.call_args_list]
+        pipeline_log_calls = [c for c in sql_calls if "lkhControl.control.pipelineRuns" in c]
+        assert len(pipeline_log_calls) > 0, "Pipeline logs should use lkhControl.control.pipelineRuns"
+
+    @patch.dict("sys.modules", {
+        "pyspark": MagicMock(),
+        "pyspark.sql": MagicMock(),
+        "pyspark.sql.functions": MagicMock(),
+    })
+    def test_no_control_lakehouse_uses_default(self):
+        """Pipeline without control_lakehouse uses default lakehouse for control tables."""
+        from fabric_utils import Pipeline, WriteStrategy
+
+        mock_spark = MagicMock()
+        mock_spark.sql.return_value.collect.return_value = []
+        mock_spark.catalog.tableExists.return_value = False
+
+        pipe = Pipeline(
+            mock_spark,
+            target_table="bronze.orders",
+            watermark_column="modified_at",
+            control_lakehouse=None,  # Use default
+        )
+
+        assert pipe.control_lakehouse is None
+        assert pipe.wm.control_table == "control.watermarks"  # 2-part, no lakehouse prefix
+        
+        pipe.get_watermark()
+
+        # Verify watermark query uses 2-part name
+        sql_calls = [str(c) for c in mock_spark.sql.call_args_list]
+        watermark_queries = [c for c in sql_calls if "control.watermarks" in c]
+        assert len(watermark_queries) > 0, "Should use default lakehouse (2-part name)"
+
 
 class TestWatermarkManagerPipelineRuns:
     """Tests for WatermarkManager.log_pipeline_run() method (v0.3.11)."""
@@ -1032,6 +1212,389 @@ class TestDeleteAppendSafety:
         sql_calls = [str(c) for c in mock_spark.sql.call_args_list]
         delete_executions = [c for c in sql_calls if "DELETE FROM bronze.orders" in c]
         assert len(delete_executions) > 0, "DELETE should execute when source has rows"
+
+
+class TestTableProperties:
+    """Tests for delta_options as persistent table properties (v0.0.02)."""
+    
+    @patch.dict("sys.modules", {
+        "pyspark": MagicMock(),
+        "pyspark.sql": MagicMock(),
+        "pyspark.sql.functions": MagicMock(),
+    })
+    def test_delta_options_applied_as_table_properties_on_full_refresh(self):
+        """delta_options should be applied as persistent table properties via ALTER TABLE."""
+        from fabric_utils import DeltaLoader, WriteStrategy
+        
+        mock_spark = MagicMock()
+        mock_spark.catalog.tableExists.return_value = False  # Initial load
+        
+        loader = DeltaLoader(
+            spark=mock_spark,
+            target_table="bronze.orders",
+            delta_options={
+                "delta.autoOptimize.optimizeWrite": "true",
+                "delta.autoOptimize.autoCompact": "true",
+                "delta.enableChangeDataFeed": "true",
+            }
+        )
+        
+        mock_df = MagicMock()
+        mock_df.columns = ["order_id", "amount"]
+        mock_df.withColumn.return_value = mock_df
+        mock_df.count.return_value = 100
+        mock_df.write.format.return_value.mode.return_value.option.return_value.saveAsTable = MagicMock()
+        
+        loader.execute(mock_df, strategy=WriteStrategy.FULL_REFRESH)
+        
+        # Verify ALTER TABLE SET TBLPROPERTIES was called
+        sql_calls = [str(call) for call in mock_spark.sql.call_args_list]
+        alter_table_calls = [c for c in sql_calls if "ALTER TABLE" in c and "SET TBLPROPERTIES" in c]
+        
+        assert len(alter_table_calls) > 0, "ALTER TABLE SET TBLPROPERTIES should be called"
+        alter_call = alter_table_calls[0]
+        
+        # Verify all three properties are in the ALTER TABLE statement
+        assert "delta.autoOptimize.optimizeWrite" in alter_call
+        assert "delta.autoOptimize.autoCompact" in alter_call
+        assert "delta.enableChangeDataFeed" in alter_call
+    
+    @patch.dict("sys.modules", {
+        "pyspark": MagicMock(),
+        "pyspark.sql": MagicMock(),
+        "pyspark.sql.functions": MagicMock(),
+    })
+    def test_ensure_table_properties_applies_to_existing_table(self):
+        """ensure_table_properties() should work on existing tables."""
+        from fabric_utils import DeltaLoader
+        
+        mock_spark = MagicMock()
+        
+        loader = DeltaLoader(
+            spark=mock_spark,
+            target_table="bronze.orders",
+            delta_options={
+                "delta.autoOptimize.optimizeWrite": "true",
+                "delta.enableChangeDataFeed": "true",
+            }
+        )
+        
+        # Call ensure_table_properties directly
+        loader.ensure_table_properties()
+        
+        # Verify ALTER TABLE was called
+        mock_spark.sql.assert_called()
+        sql_call = str(mock_spark.sql.call_args_list[-1])
+        
+        assert "ALTER TABLE bronze.orders" in sql_call
+        assert "SET TBLPROPERTIES" in sql_call
+        assert "delta.autoOptimize.optimizeWrite" in sql_call
+        assert "delta.enableChangeDataFeed" in sql_call
+    
+    @patch.dict("sys.modules", {
+        "pyspark": MagicMock(),
+        "pyspark.sql": MagicMock(),
+        "pyspark.sql.functions": MagicMock(),
+    })
+    def test_empty_delta_options_does_not_call_alter_table(self):
+        """If delta_options is empty, should not call ALTER TABLE."""
+        from fabric_utils import DeltaLoader
+        
+        mock_spark = MagicMock()
+        
+        loader = DeltaLoader(
+            spark=mock_spark,
+            target_table="bronze.orders",
+            delta_options={}  # Empty
+        )
+        
+        # Call ensure_table_properties
+        loader.ensure_table_properties()
+        
+        # Verify ALTER TABLE was NOT called
+        sql_calls = [str(call) for call in mock_spark.sql.call_args_list]
+        alter_table_calls = [c for c in sql_calls if "ALTER TABLE" in c and "SET TBLPROPERTIES" in c]
+        
+        assert len(alter_table_calls) == 0, "ALTER TABLE should not be called when delta_options is empty"
+    
+    @patch.dict("sys.modules", {
+        "pyspark": MagicMock(),
+        "pyspark.sql": MagicMock(),
+        "pyspark.sql.functions": MagicMock(),
+        "delta": MagicMock(),
+        "delta.tables": MagicMock(),
+    })
+    def test_pipeline_ensure_table_properties_delegates_to_loader(self):
+        """Pipeline.ensure_table_properties() should delegate to loader."""
+        from fabric_utils import Pipeline, WriteStrategy
+        
+        mock_spark = MagicMock()
+        mock_spark.sql.return_value.collect.return_value = []
+        mock_spark.catalog.tableExists.return_value = True
+        
+        pipe = Pipeline(
+            spark=mock_spark,
+            target_table="bronze.orders",
+            watermark_column="modified_at",
+            strategy=WriteStrategy.MERGE,
+            unique_key_cols=["order_id"],
+            delta_options={
+                "delta.autoOptimize.optimizeWrite": "true",
+            }
+        )
+        
+        # Call pipeline's ensure_table_properties
+        pipe.ensure_table_properties()
+        
+        # Verify ALTER TABLE was called through the loader
+        sql_calls = [str(call) for call in mock_spark.sql.call_args_list]
+        alter_table_calls = [c for c in sql_calls if "ALTER TABLE" in c and "SET TBLPROPERTIES" in c]
+        
+        assert len(alter_table_calls) > 0, "Pipeline should delegate to loader's ensure_table_properties"
+        assert "delta.autoOptimize.optimizeWrite" in alter_table_calls[0]
+    
+    @patch.dict("sys.modules", {
+        "pyspark": MagicMock(),
+        "pyspark.sql": MagicMock(),
+        "pyspark.sql.functions": MagicMock(),
+    })
+    def test_delta_options_not_applied_during_write(self):
+        """delta_options should NOT be applied as write options, only as table properties."""
+        from fabric_utils import DeltaLoader, WriteStrategy
+        
+        mock_spark = MagicMock()
+        mock_spark.catalog.tableExists.return_value = False
+        
+        mock_writer = MagicMock()
+        mock_format = MagicMock()
+        mock_mode = MagicMock()
+        mock_option = MagicMock()
+        
+        # Chain the mock writer methods
+        mock_df = MagicMock()
+        mock_df.columns = ["order_id"]
+        mock_df.withColumn.return_value = mock_df
+        mock_df.count.return_value = 10
+        mock_df.write = mock_writer
+        mock_writer.format.return_value = mock_format
+        mock_format.mode.return_value = mock_mode
+        mock_mode.option.return_value = mock_option
+        mock_option.saveAsTable = MagicMock()
+        
+        loader = DeltaLoader(
+            spark=mock_spark,
+            target_table="bronze.orders",
+            delta_options={
+                "delta.autoOptimize.optimizeWrite": "true",
+            }
+        )
+        
+        loader.execute(mock_df, strategy=WriteStrategy.FULL_REFRESH)
+        
+        # Verify .option() was only called for overwriteSchema, not for delta_options
+        option_calls = [str(call) for call in mock_mode.option.call_args_list]
+        
+        # Should have exactly one option call for overwriteSchema
+        assert len(option_calls) == 1, "Should only call .option() for overwriteSchema"
+        assert "overwriteSchema" in option_calls[0]
+        
+        # delta.autoOptimize.optimizeWrite should NOT be in write options
+        assert not any("autoOptimize" in c for c in option_calls), \
+            "delta_options should not be applied as write options"
+
+
+class TestTableAndColumnComments:
+    """Tests for table_comment and column_comments support (v0.0.03)."""
+    
+    @patch.dict("sys.modules", {
+        "pyspark": MagicMock(),
+        "pyspark.sql": MagicMock(),
+        "pyspark.sql.functions": MagicMock(),
+    })
+    def test_table_comment_applied_on_full_refresh(self):
+        """Table comment should be applied via COMMENT ON TABLE."""
+        from fabric_utils import DeltaLoader, WriteStrategy
+        
+        mock_spark = MagicMock()
+        mock_spark.catalog.tableExists.return_value = False
+        
+        loader = DeltaLoader(
+            spark=mock_spark,
+            target_table="bronze.orders",
+            table_comment="Bronze layer orders from ERP system",
+        )
+        
+        mock_df = MagicMock()
+        mock_df.columns = ["order_id", "amount"]
+        mock_df.withColumn.return_value = mock_df
+        mock_df.count.return_value = 100
+        mock_df.write.format.return_value.mode.return_value.option.return_value.saveAsTable = MagicMock()
+        
+        loader.execute(mock_df, strategy=WriteStrategy.FULL_REFRESH)
+        
+        # Verify COMMENT ON TABLE was called
+        sql_calls = [str(call) for call in mock_spark.sql.call_args_list]
+        comment_calls = [c for c in sql_calls if "COMMENT ON TABLE" in c]
+        
+        assert len(comment_calls) > 0, "COMMENT ON TABLE should be called"
+        assert "Bronze layer orders from ERP system" in comment_calls[0]
+    
+    @patch.dict("sys.modules", {
+        "pyspark": MagicMock(),
+        "pyspark.sql": MagicMock(),
+        "pyspark.sql.functions": MagicMock(),
+    })
+    def test_column_comments_applied_on_full_refresh(self):
+        """Column comments should be applied via ALTER TABLE ALTER COLUMN."""
+        from fabric_utils import DeltaLoader, WriteStrategy
+        
+        mock_spark = MagicMock()
+        mock_spark.catalog.tableExists.return_value = False
+        
+        loader = DeltaLoader(
+            spark=mock_spark,
+            target_table="bronze.orders",
+            column_comments={
+                "order_id": "Unique order identifier from source system",
+                "amount": "Order total amount in USD",
+                "created_at": "Timestamp when order was created",
+            }
+        )
+        
+        mock_df = MagicMock()
+        mock_df.columns = ["order_id", "amount", "created_at"]
+        mock_df.withColumn.return_value = mock_df
+        mock_df.count.return_value = 100
+        mock_df.write.format.return_value.mode.return_value.option.return_value.saveAsTable = MagicMock()
+        
+        loader.execute(mock_df, strategy=WriteStrategy.FULL_REFRESH)
+        
+        # Verify ALTER TABLE ALTER COLUMN COMMENT was called for each column
+        sql_calls = [str(call) for call in mock_spark.sql.call_args_list]
+        alter_column_calls = [c for c in sql_calls if "ALTER TABLE" in c and "ALTER COLUMN" in c and "COMMENT" in c]
+        
+        assert len(alter_column_calls) == 3, "Should have 3 ALTER COLUMN COMMENT calls"
+        
+        # Verify each column comment is present
+        all_calls = " ".join(alter_column_calls)
+        assert "order_id" in all_calls
+        assert "Unique order identifier" in all_calls
+        assert "amount" in all_calls
+        assert "Order total amount in USD" in all_calls
+        assert "created_at" in all_calls
+        assert "Timestamp when order was created" in all_calls
+    
+    @patch.dict("sys.modules", {
+        "pyspark": MagicMock(),
+        "pyspark.sql": MagicMock(),
+        "pyspark.sql.functions": MagicMock(),
+    })
+    def test_comments_with_special_characters_are_escaped(self):
+        """Comments with quotes should be properly escaped."""
+        from fabric_utils import DeltaLoader, WriteStrategy
+        
+        mock_spark = MagicMock()
+        mock_spark.catalog.tableExists.return_value = False
+        
+        loader = DeltaLoader(
+            spark=mock_spark,
+            target_table="bronze.orders",
+            table_comment="Orders from 'ERP' system with \"special\" characters",
+            column_comments={
+                "order_id": "Customer's order ID",
+            }
+        )
+        
+        mock_df = MagicMock()
+        mock_df.columns = ["order_id"]
+        mock_df.withColumn.return_value = mock_df
+        mock_df.count.return_value = 10
+        mock_df.write.format.return_value.mode.return_value.option.return_value.saveAsTable = MagicMock()
+        
+        loader.execute(mock_df, strategy=WriteStrategy.FULL_REFRESH)
+        
+        # Verify escaping in SQL calls
+        sql_calls = [str(call) for call in mock_spark.sql.call_args_list]
+        
+        # Table comment should have escaped quotes
+        table_comment_calls = [c for c in sql_calls if "COMMENT ON TABLE" in c]
+        assert len(table_comment_calls) > 0
+        # Should contain escaped quotes
+        assert "\\\\" in table_comment_calls[0], "Quotes should be escaped"
+        
+        # Column comment should have escaped quotes
+        column_comment_calls = [c for c in sql_calls if "ALTER COLUMN" in c and "COMMENT" in c]
+        assert len(column_comment_calls) > 0
+        assert "\\\\" in column_comment_calls[0], "Quotes should be escaped"
+    
+    @patch.dict("sys.modules", {
+        "pyspark": MagicMock(),
+        "pyspark.sql": MagicMock(),
+        "pyspark.sql.functions": MagicMock(),
+    })
+    def test_ensure_table_properties_applies_all_metadata(self):
+        """ensure_table_properties should apply properties, table comment, and column comments."""
+        from fabric_utils import DeltaLoader
+        
+        mock_spark = MagicMock()
+        
+        loader = DeltaLoader(
+            spark=mock_spark,
+            target_table="bronze.orders",
+            delta_options={"delta.enableChangeDataFeed": "true"},
+            table_comment="Bronze orders table",
+            column_comments={"order_id": "Primary key"}
+        )
+        
+        loader.ensure_table_properties()
+        
+        sql_calls = [str(call) for call in mock_spark.sql.call_args_list]
+        
+        # Should have called SET TBLPROPERTIES
+        assert any("SET TBLPROPERTIES" in c for c in sql_calls), "Should set table properties"
+        
+        # Should have called COMMENT ON TABLE
+        assert any("COMMENT ON TABLE" in c for c in sql_calls), "Should set table comment"
+        
+        # Should have called ALTER COLUMN COMMENT
+        assert any("ALTER COLUMN" in c and "COMMENT" in c for c in sql_calls), "Should set column comments"
+    
+    @patch.dict("sys.modules", {
+        "pyspark": MagicMock(),
+        "pyspark.sql": MagicMock(),
+        "pyspark.sql.functions": MagicMock(),
+        "delta": MagicMock(),
+        "delta.tables": MagicMock(),
+    })
+    def test_pipeline_passes_comments_to_loader(self):
+        """Pipeline should pass table_comment and column_comments to DeltaLoader."""
+        from fabric_utils import Pipeline, WriteStrategy
+        
+        mock_spark = MagicMock()
+        mock_spark.sql.return_value.collect.return_value = []
+        mock_spark.catalog.tableExists.return_value = True
+        
+        pipe = Pipeline(
+            spark=mock_spark,
+            target_table="bronze.orders",
+            watermark_column="modified_at",
+            strategy=WriteStrategy.MERGE,
+            unique_key_cols=["order_id"],
+            table_comment="Bronze orders from ERP",
+            column_comments={"order_id": "Primary key", "amount": "Order total"}
+        )
+        
+        # Verify loader has the comments
+        assert pipe.loader.table_comment == "Bronze orders from ERP"
+        assert pipe.loader.column_comments == {"order_id": "Primary key", "amount": "Order total"}
+        
+        # Call ensure_table_properties through pipeline
+        pipe.ensure_table_properties()
+        
+        # Verify comments were applied
+        sql_calls = [str(call) for call in mock_spark.sql.call_args_list]
+        assert any("COMMENT ON TABLE" in c and "Bronze orders from ERP" in c for c in sql_calls)
+        assert any("ALTER COLUMN" in c and "order_id" in c and "Primary key" in c for c in sql_calls)
 
 
 if __name__ == "__main__":
