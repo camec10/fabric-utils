@@ -10,33 +10,33 @@ from unittest.mock import MagicMock, patch
 from datetime import datetime, timedelta
 
 
-class TestWatermarkManager:
-    """Tests for WatermarkManager class."""
+class TestTableRegistry:
+    """Tests for TableRegistry class (formerly WatermarkManager)."""
     
     def test_get_watermark_returns_none_on_initial_load(self):
         """First run should return None to trigger full load."""
-        from fabric_utils import WatermarkManager
+        from fabric_utils import TableRegistry
         
         mock_spark = MagicMock()
         mock_spark.sql.return_value.collect.return_value = []
         
-        wm = WatermarkManager(mock_spark, schema="control")
+        wm = TableRegistry(mock_spark, schema="control")
         result = wm.get_watermark("bronze.orders")
         
         assert result is None
     
     def test_control_lakehouse_two_part_table_name(self):
         """Control lakehouse with 2-part data table name."""
-        from fabric_utils import WatermarkManager
+        from fabric_utils import TableRegistry
         
         mock_spark = MagicMock()
         mock_spark.sql.return_value.collect.return_value = []
         
         # Control tables in separate lakehouse, data in default lakehouse
-        wm = WatermarkManager(mock_spark, control_lakehouse="lkhControl", schema="control")
+        wm = TableRegistry(mock_spark, control_lakehouse="lkhControl", schema="control")
         
-        # Should build control_table as lkhControl.control.watermarks
-        assert wm.control_table == "lkhControl.control.watermarks"
+        # Should build control_table as lkhControl.control.tableRegistry
+        assert wm.control_table == "lkhControl.control.tableRegistry"
         assert wm.control_lakehouse == "lkhControl"
         
         # Data table can still be 2-part
@@ -45,15 +45,15 @@ class TestWatermarkManager:
     
     def test_control_lakehouse_three_part_table_name(self):
         """Control lakehouse with 3-part data table name."""
-        from fabric_utils import WatermarkManager
+        from fabric_utils import TableRegistry
         
         mock_spark = MagicMock()
         mock_spark.sql.return_value.collect.return_value = []
         
         # Control tables in lkhControl, data in lkhRaw
-        wm = WatermarkManager(mock_spark, control_lakehouse="lkhControl", schema="control")
+        wm = TableRegistry(mock_spark, control_lakehouse="lkhControl", schema="control")
         
-        assert wm.control_table == "lkhControl.control.watermarks"
+        assert wm.control_table == "lkhControl.control.tableRegistry"
         
         # Data table is 3-part, separate from control
         result = wm.get_watermark("lkhRaw.bronze.orders")
@@ -61,20 +61,20 @@ class TestWatermarkManager:
     
     def test_no_control_lakehouse_uses_default(self):
         """When control_lakehouse is None, use default attached lakehouse."""
-        from fabric_utils import WatermarkManager
+        from fabric_utils import TableRegistry
         
         mock_spark = MagicMock()
         mock_spark.sql.return_value.collect.return_value = []
         
-        wm = WatermarkManager(mock_spark, control_lakehouse=None, schema="control")
+        wm = TableRegistry(mock_spark, control_lakehouse=None, schema="control")
         
         # Should build 2-part name without lakehouse prefix
-        assert wm.control_table == "control.watermarks"
+        assert wm.control_table == "control.tableRegistry"
         assert wm.control_lakehouse is None
     
     def test_get_watermark_applies_lookback(self):
         """Lookback should subtract days from watermark."""
-        from fabric_utils import WatermarkManager
+        from fabric_utils import TableRegistry
         
         base_watermark = datetime(2024, 3, 15, 12, 0, 0)
         
@@ -83,7 +83,7 @@ class TestWatermarkManager:
             {"watermarkValue": base_watermark}
         ]
         
-        wm = WatermarkManager(mock_spark, schema="control")
+        wm = TableRegistry(mock_spark, schema="control")
         result = wm.get_watermark("bronze.orders", lookback_days=90)
         
         expected = base_watermark - timedelta(days=90)
@@ -91,19 +91,19 @@ class TestWatermarkManager:
     
     def test_build_where_clause_returns_empty_on_initial(self):
         """Initial load should return empty WHERE clause."""
-        from fabric_utils import WatermarkManager
+        from fabric_utils import TableRegistry
         
         mock_spark = MagicMock()
         mock_spark.sql.return_value.collect.return_value = []
         
-        wm = WatermarkManager(mock_spark, schema="control")
+        wm = TableRegistry(mock_spark, schema="control")
         clause = wm.build_where_clause("bronze.orders", "modified_at")
         
         assert clause == ""
     
     def test_build_where_clause_formats_timestamp(self):
         """WHERE clause should properly format timestamp."""
-        from fabric_utils import WatermarkManager
+        from fabric_utils import TableRegistry
         
         watermark = datetime(2024, 1, 1, 0, 0, 0)
         
@@ -112,7 +112,7 @@ class TestWatermarkManager:
             {"watermarkValue": watermark}
         ]
         
-        wm = WatermarkManager(mock_spark, schema="control")
+        wm = TableRegistry(mock_spark, schema="control")
         clause = wm.build_where_clause("bronze.orders", "modified_at")
         
         assert "WHERE modified_at >=" in clause
@@ -254,7 +254,7 @@ class TestDeltaLoader:
         from fabric_utils import DeltaLoader, WriteStrategy, LoaderError
         
         mock_spark = MagicMock()
-        mock_spark.catalog.tableExists.return_value = True
+        mock_spark.catalog.tableExists.side_effect = lambda table: "watermarks" not in table
         mock_spark.sql.return_value.collect.return_value = [
             {"version": 5, "cnt": 10}
         ]
@@ -308,7 +308,7 @@ class TestPipeline:
         from fabric_utils import Pipeline, WriteStrategy
 
         mock_spark = MagicMock()
-        # WatermarkManager.get_watermark returns None (no row in control table)
+        # TableRegistry.get_watermark returns None (no row in control table)
         mock_spark.sql.return_value.collect.return_value = []
 
         pipe = Pipeline(
@@ -377,7 +377,7 @@ class TestPipeline:
     def test_components_accessible(self):
         """Underlying WatermarkManager and DeltaLoader should be directly accessible."""
         from fabric_utils import Pipeline, WriteStrategy
-        from fabric_utils.watermark import WatermarkManager
+        from fabric_utils.registry import TableRegistry
         from fabric_utils.loader import DeltaLoader
 
         mock_spark = MagicMock()
@@ -388,7 +388,7 @@ class TestPipeline:
             unique_key_cols=["order_id"],
         )
 
-        assert isinstance(pipe.wm, WatermarkManager)
+        assert isinstance(pipe.wm, TableRegistry)
         assert isinstance(pipe.loader, DeltaLoader)
         assert pipe.loader.unique_key_cols == ["order_id"]
 
@@ -408,7 +408,7 @@ class TestPipeline:
         # Mock SQL return - proper responses for all queries
         def sql_mock(query):
             mock_result = MagicMock()
-            if "watermarks" in query and "SELECT" in query:
+            if "tableRegistry" in query and "SELECT" in query:
                 # Watermark query
                 mock_result.collect.return_value = [{"watermarkValue": stored_wm}]
             elif "COUNT" in query or "DELETE" in query:
@@ -420,7 +420,7 @@ class TestPipeline:
             return mock_result
         
         mock_spark.sql.side_effect = sql_mock
-        mock_spark.catalog.tableExists.return_value = True
+        mock_spark.catalog.tableExists.side_effect = lambda table: "watermarks" not in table
 
         pipe = Pipeline(
             mock_spark,
@@ -488,7 +488,7 @@ class TestPipeline:
 
         # Verify watermark update was called (it's a MERGE INTO via spark.sql)
         sql_calls = [str(c) for c in mock_spark.sql.call_args_list]
-        merge_calls = [c for c in sql_calls if "MERGE INTO control.watermarks" in c]
+        merge_calls = [c for c in sql_calls if "MERGE INTO control.tableRegistry" in c]
         assert len(merge_calls) > 0, "Expected watermark update after successful load"
     
     @patch.dict("sys.modules", {
@@ -506,7 +506,7 @@ class TestPipeline:
         mock_spark.sql.return_value.collect.return_value = [
             {"watermarkValue": existing_wm}
         ]
-        mock_spark.catalog.tableExists.return_value = True
+        mock_spark.catalog.tableExists.side_effect = lambda table: "watermarks" not in table
 
         pipe = Pipeline(
             mock_spark,
@@ -528,10 +528,10 @@ class TestPipeline:
 
         result = pipe.execute(mock_df, new_watermark=datetime(2024, 7, 1))
 
-        # Verify reset was called during get_watermark() (DELETE FROM watermarks)
+        # Verify reset was called during get_watermark() (UPDATE SET watermarkValue = NULL)
         sql_calls = [str(c) for c in mock_spark.sql.call_args_list]
-        delete_calls = [c for c in sql_calls if "DELETE FROM" in c and "watermarks" in c]
-        assert len(delete_calls) > 0, "Expected watermark reset for explicit FULL_REFRESH"
+        update_calls = [c for c in sql_calls if "UPDATE" in c and "tableRegistry" in c and "watermarkValue = NULL" in c]
+        assert len(update_calls) > 0, "Expected watermark reset for explicit FULL_REFRESH"
 
     @patch.dict("sys.modules", {
         "pyspark": MagicMock(),
@@ -554,7 +554,7 @@ class TestPipeline:
         
         def sql_mock(query):
             mock_result = MagicMock()
-            if "watermarks" in query and "SELECT" in query:
+            if "tableRegistry" in query and "SELECT" in query:
                 # Watermark query returns orphaned watermark
                 mock_result.collect.return_value = [{"watermarkValue": orphaned_wm}]
             else:
@@ -595,8 +595,8 @@ class TestPipeline:
 
         # Verify reset was called during get_watermark()
         sql_calls = [str(c) for c in mock_spark.sql.call_args_list]
-        delete_calls = [c for c in sql_calls if "DELETE FROM" in c and "watermarks" in c]
-        assert len(delete_calls) > 0, "Expected watermark reset during get_watermark()"
+        update_calls = [c for c in sql_calls if "UPDATE" in c and "tableRegistry" in c and "watermarkValue = NULL" in c]
+        assert len(update_calls) > 0, "Expected watermark reset during get_watermark()"
 
     @patch.dict("sys.modules", {
         "pyspark": MagicMock(),
@@ -713,7 +713,7 @@ class TestPipeline:
 
         mock_spark = MagicMock()
         mock_spark.sql.return_value.collect.return_value = []
-        mock_spark.catalog.tableExists.return_value = True
+        mock_spark.catalog.tableExists.side_effect = lambda table: "watermarks" not in table
 
         # Test with uppercase string
         pipe = Pipeline(
@@ -737,7 +737,7 @@ class TestPipeline:
 
         mock_spark = MagicMock()
         mock_spark.sql.return_value.collect.return_value = []
-        mock_spark.catalog.tableExists.return_value = True
+        mock_spark.catalog.tableExists.side_effect = lambda table: "watermarks" not in table
 
         # Test with lowercase string
         pipe = Pipeline(
@@ -761,7 +761,7 @@ class TestPipeline:
 
         mock_spark = MagicMock()
         mock_spark.sql.return_value.collect.return_value = []
-        mock_spark.catalog.tableExists.return_value = True
+        mock_spark.catalog.tableExists.side_effect = lambda table: "watermarks" not in table
 
         # Test with invalid string
         with pytest.raises(ValueError) as exc_info:
@@ -786,7 +786,7 @@ class TestPipeline:
 
         mock_spark = MagicMock()
         mock_spark.sql.return_value.collect.return_value = []
-        mock_spark.catalog.tableExists.return_value = True
+        mock_spark.catalog.tableExists.side_effect = lambda table: "watermarks" not in table
 
         # Test with enum (existing behavior)
         pipe = Pipeline(
@@ -821,13 +821,13 @@ class TestPipeline:
 
         assert pipe.target_table == "bronze.orders"
         assert pipe.control_lakehouse == "lkhControl"
-        assert pipe.wm.control_table == "lkhControl.control.watermarks"
+        assert pipe.wm.control_table == "lkhControl.control.tableRegistry"
         
         pipe.get_watermark()
 
         # Verify watermark query uses control lakehouse
         sql_calls = [str(c) for c in mock_spark.sql.call_args_list]
-        watermark_queries = [c for c in sql_calls if "lkhControl.control.watermarks" in c]
+        watermark_queries = [c for c in sql_calls if "lkhControl.control.tableRegistry" in c]
         assert len(watermark_queries) > 0, "Watermark queries should use control lakehouse"
 
     @patch.dict("sys.modules", {
@@ -855,13 +855,13 @@ class TestPipeline:
 
         assert pipe.target_table == "lkhRaw.bronze.orders"
         assert pipe.control_lakehouse == "lkhControl"
-        assert pipe.wm.control_table == "lkhControl.control.watermarks"
+        assert pipe.wm.control_table == "lkhControl.control.tableRegistry"
         
         pipe.get_watermark()
 
         # Verify separation: watermarks in lkhControl, data in lkhRaw
         sql_calls = [str(c) for c in mock_spark.sql.call_args_list]
-        watermark_queries = [c for c in sql_calls if "lkhControl.control.watermarks" in c]
+        watermark_queries = [c for c in sql_calls if "lkhControl.control.tableRegistry" in c]
         assert len(watermark_queries) > 0, "Watermark queries should use lkhControl"
         
         # Target table references should use lkhRaw
@@ -922,25 +922,25 @@ class TestPipeline:
         )
 
         assert pipe.control_lakehouse is None
-        assert pipe.wm.control_table == "control.watermarks"  # 2-part, no lakehouse prefix
+        assert pipe.wm.control_table == "control.tableRegistry"  # 2-part, no lakehouse prefix
         
         pipe.get_watermark()
 
         # Verify watermark query uses 2-part name
         sql_calls = [str(c) for c in mock_spark.sql.call_args_list]
-        watermark_queries = [c for c in sql_calls if "control.watermarks" in c]
+        watermark_queries = [c for c in sql_calls if "control.tableRegistry" in c]
         assert len(watermark_queries) > 0, "Should use default lakehouse (2-part name)"
 
 
-class TestWatermarkManagerPipelineRuns:
+class TestTableRegistryPipelineRuns:
     """Tests for WatermarkManager.log_pipeline_run() method (v0.3.11)."""
     
     def test_log_pipeline_run_creates_record(self):
         """log_pipeline_run should insert/update pipelineRuns table."""
-        from fabric_utils import WatermarkManager
+        from fabric_utils import TableRegistry
         
         mock_spark = MagicMock()
-        wm = WatermarkManager(mock_spark, schema="control")
+        wm = TableRegistry(mock_spark, schema="control")
         
         wm.log_pipeline_run(
             run_id="test-run-123",
@@ -957,10 +957,10 @@ class TestWatermarkManagerPipelineRuns:
     
     def test_log_pipeline_run_with_metrics(self):
         """log_pipeline_run should record execution metrics on completion."""
-        from fabric_utils import WatermarkManager
+        from fabric_utils import TableRegistry
         
         mock_spark = MagicMock()
-        wm = WatermarkManager(mock_spark, schema="control")
+        wm = TableRegistry(mock_spark, schema="control")
         
         wm.log_pipeline_run(
             run_id="test-run-456",
@@ -995,7 +995,7 @@ class TestTimestampPrecision:
         This fixes string column comparison issues where:
         '2024-01-01 00:00:00' >= '2024-01-01 00:00:00.000000' returns FALSE lexicographically
         """
-        from fabric_utils import WatermarkManager
+        from fabric_utils import TableRegistry
         
         # Watermark with zero microseconds
         watermark = datetime(2024, 1, 1, 12, 30, 45, 0)  # microsecond=0
@@ -1005,7 +1005,7 @@ class TestTimestampPrecision:
             {"watermarkValue": watermark}
         ]
         
-        wm = WatermarkManager(mock_spark, schema="control")
+        wm = TableRegistry(mock_spark, schema="control")
         clause = wm.build_where_clause("bronze.orders", "modified_at")
         
         # Should NOT contain .000000
@@ -1014,7 +1014,7 @@ class TestTimestampPrecision:
     
     def test_build_where_clause_includes_microseconds_when_nonzero(self):
         """WHERE clause SHOULD include microseconds when they are non-zero."""
-        from fabric_utils import WatermarkManager
+        from fabric_utils import TableRegistry
         
         # Watermark with non-zero microseconds
         watermark = datetime(2024, 1, 1, 12, 30, 45, 123456)
@@ -1024,7 +1024,7 @@ class TestTimestampPrecision:
             {"watermarkValue": watermark}
         ]
         
-        wm = WatermarkManager(mock_spark, schema="control")
+        wm = TableRegistry(mock_spark, schema="control")
         clause = wm.build_where_clause("bronze.orders", "modified_at")
         
         # Should contain the microseconds
@@ -1032,10 +1032,10 @@ class TestTimestampPrecision:
     
     def test_update_watermark_no_microseconds_when_zero(self):
         """update_watermark should NOT include .000000 when microseconds are zero (v0.3.16)."""
-        from fabric_utils import WatermarkManager
+        from fabric_utils import TableRegistry
         
         mock_spark = MagicMock()
-        wm = WatermarkManager(mock_spark, schema="control")
+        wm = TableRegistry(mock_spark, schema="control")
         
         # Watermark with zero microseconds
         new_value = datetime(2024, 6, 15, 8, 0, 0, 0)
@@ -1043,7 +1043,7 @@ class TestTimestampPrecision:
         
         # Check the SQL call
         sql_calls = [str(c) for c in mock_spark.sql.call_args_list]
-        merge_calls = [c for c in sql_calls if "MERGE INTO" in c and "watermarks" in c]
+        merge_calls = [c for c in sql_calls if "MERGE INTO" in c and "tableRegistry" in c]
         assert len(merge_calls) > 0
         
         # Should NOT contain .000000
@@ -1053,10 +1053,10 @@ class TestTimestampPrecision:
     
     def test_update_watermark_includes_microseconds_when_nonzero(self):
         """update_watermark SHOULD include microseconds when they are non-zero."""
-        from fabric_utils import WatermarkManager
+        from fabric_utils import TableRegistry
         
         mock_spark = MagicMock()
-        wm = WatermarkManager(mock_spark, schema="control")
+        wm = TableRegistry(mock_spark, schema="control")
         
         # Watermark with non-zero microseconds
         new_value = datetime(2024, 6, 15, 8, 0, 0, 500000)
@@ -1064,7 +1064,7 @@ class TestTimestampPrecision:
         
         # Check the SQL call
         sql_calls = [str(c) for c in mock_spark.sql.call_args_list]
-        merge_calls = [c for c in sql_calls if "MERGE INTO" in c and "watermarks" in c]
+        merge_calls = [c for c in sql_calls if "MERGE INTO" in c and "tableRegistry" in c]
         assert len(merge_calls) > 0
         
         # Should contain .500000
@@ -1089,7 +1089,7 @@ class TestTimestampPrecision:
         
         def sql_mock(query):
             mock_result = MagicMock()
-            if "watermarks" in query and "SELECT" in query:
+            if "tableRegistry" in query and "SELECT" in query:
                 mock_result.collect.return_value = [{"watermarkValue": stored_wm}]
             elif "COUNT" in query:
                 mock_result.collect.return_value = [{"cnt": 100}]
@@ -1098,7 +1098,7 @@ class TestTimestampPrecision:
             return mock_result
         
         mock_spark.sql.side_effect = sql_mock
-        mock_spark.catalog.tableExists.return_value = True
+        mock_spark.catalog.tableExists.side_effect = lambda table: "watermarks" not in table
 
         pipe = Pipeline(
             mock_spark,
@@ -1143,7 +1143,7 @@ class TestDeleteAppendSafety:
         mock_spark = MagicMock()
         # Target has 275k rows matching the delete predicate
         mock_spark.sql.return_value.collect.return_value = [{"cnt": 275000}]
-        mock_spark.catalog.tableExists.return_value = True
+        mock_spark.catalog.tableExists.side_effect = lambda table: "watermarks" not in table
         
         loader = DeltaLoader(
             spark=mock_spark,
@@ -1185,7 +1185,7 @@ class TestDeleteAppendSafety:
         mock_spark = MagicMock()
         # Target has 1000 rows to delete
         mock_spark.sql.return_value.collect.return_value = [{"cnt": 1000}]
-        mock_spark.catalog.tableExists.return_value = True
+        mock_spark.catalog.tableExists.side_effect = lambda table: "watermarks" not in table
         
         loader = DeltaLoader(
             spark=mock_spark,
@@ -1330,7 +1330,7 @@ class TestTableProperties:
         
         mock_spark = MagicMock()
         mock_spark.sql.return_value.collect.return_value = []
-        mock_spark.catalog.tableExists.return_value = True
+        mock_spark.catalog.tableExists.side_effect = lambda table: "watermarks" not in table
         
         pipe = Pipeline(
             spark=mock_spark,
@@ -1572,7 +1572,7 @@ class TestTableAndColumnComments:
         
         mock_spark = MagicMock()
         mock_spark.sql.return_value.collect.return_value = []
-        mock_spark.catalog.tableExists.return_value = True
+        mock_spark.catalog.tableExists.side_effect = lambda table: "watermarks" not in table
         
         pipe = Pipeline(
             spark=mock_spark,

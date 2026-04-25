@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.03] - 2025-01-29
+
+### Added
+- **TableRegistry** class (replaces WatermarkManager) with optimization scheduling capabilities
+- `register_table()` method to register tables with optimization schedules
+- `set_optimization_schedule()` method to configure optimization frequency
+- `get_tables_needing_optimization()` method to find tables due for optimization
+- `update_last_optimized()` method to track optimization runs
+- `get_table_metadata()` method to retrieve table registration details
+- `list_tables()` method to list all registered tables
+- Automatic migration from `control.watermarks` to `control.tableRegistry` on first use
+- `uniqueColumns` field in tableRegistry for tracking unique identifiers
+- `optimizationScheduleDays` field for scheduling periodic table optimization
+- `lastOptimizedTimestamp` field for tracking last optimization run
+
+### Changed
+- **BREAKING**: Renamed `control.watermarks` table to `control.tableRegistry`
+- **BREAKING**: Renamed `createdTs` → `createdTimestamp` in tableRegistry
+- **BREAKING**: Renamed `updatedTs` → `updatedTimestamp` in tableRegistry (new field)
+- **BREAKING**: Renamed `lastRunTs` → `lastRunTimestamp` in tableRegistry
+- **BREAKING**: Renamed `startedTs` → `startedTimestamp` in pipelineRuns
+- **BREAKING**: Renamed `completedTs` → `completedTimestamp` in pipelineRuns
+- `reset_watermark()` now uses `UPDATE SET watermarkValue = NULL` instead of `DELETE FROM`
+- All control table timestamp columns now use `Timestamp` suffix for consistency
+- `WatermarkManager` is now an alias for `TableRegistry` (backward compatible)
+
+### Migration Notes
+- Automatic migration runs on first TableRegistry initialization
+- Migration preserves existing watermark data with new schema
+- Old `control.watermarks` table dropped after successful migration
+- No user action required - migration is idempotent and automatic
+- Both `TableRegistry` and `WatermarkManager` can be imported (same class)
+
+## [0.0.02] - 2026-04-24
+
 ### Added
 - `table_comment` parameter for DeltaLoader and Pipeline to document table purpose
 - `column_comments` parameter (dict) for DeltaLoader and Pipeline to document column meanings

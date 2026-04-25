@@ -1,8 +1,43 @@
 # fabric-utils
 
-Data engineering utilities for Microsoft Fabric — watermarking, incremental loading, and Delta Lake strategies.
+Data engineering utilities for Microsoft Fabric — table registry, watermarking, optimization scheduling, and Delta Lake strategies.
 
 ## What's New
+
+### v0.0.03 — Table Registry & Optimization Scheduling (January 2025)
+
+**Major Enhancement**: Expanded watermark tracking into a comprehensive table registry with optimization scheduling.
+
+**New Features**
+- **TableRegistry Class**: Replaces `WatermarkManager` with expanded metadata management
+- **Optimization Scheduling**: Track and schedule periodic table optimization
+  - `set_optimization_schedule()` — Configure optimization frequency in days
+  - `get_tables_needing_optimization()` — Find tables due for optimization
+  - `update_last_optimized()` — Record optimization completion
+- **Table Registration**: Unified metadata management
+  - `register_table()` — Register tables with unique columns and optimization schedules
+  - `get_table_metadata()` — Retrieve full registration details
+  - `list_tables()` — View all registered tables
+- **Automatic Migration**: Zero-downtime upgrade from v0.0.x
+  - Migrates `control.watermarks` → `control.tableRegistry` automatically
+  - Preserves all existing watermark data
+  - No user action required
+
+**Breaking Changes**
+- Table renamed: `control.watermarks` → `control.tableRegistry`
+- Column naming standardized with `Timestamp` suffix:
+  - `createdTs` → `createdTimestamp`
+  - `lastRunTs` → `lastRunTimestamp`
+  - `startedTs` → `startedTimestamp`
+  - `completedTs` → `completedTimestamp`
+- `reset_watermark()` now uses `UPDATE SET watermarkValue = NULL` instead of `DELETE`
+
+**Backward Compatibility**
+- `WatermarkManager` is maintained as an alias for `TableRegistry`
+- Existing code continues to work without modification
+- Both class names can be imported
+
+See [CHANGELOG.md](CHANGELOG.md) for full details.
 
 ### v0.0.02 — Documentation & Metadata (April 2026)
 
@@ -178,14 +213,16 @@ The library is composed of independent, single-responsibility components:
 
 | Component | Responsibility |
 |---|---|
-| **Pipeline** | Orchestrator — composes watermark + loader into one workflow |
-| **WatermarkManager** | Track incremental progress — get, update, reset watermarks |
+| **Pipeline** | Orchestrator — composes table registry + loader into one workflow |
+| **TableRegistry** | Track incremental progress, optimization schedules, and table metadata |
 | **DeltaLoader** | Write DataFrames to Delta tables — overwrite, delete+append, merge |
 | **setup_control_tables()** | Bootstrap control schema and audit tables |
 
-**Pipeline** is the recommended entry point — it composes WatermarkManager
+**Pipeline** is the recommended entry point — it composes TableRegistry
 and DeltaLoader so you can't forget to update the watermark or pick the wrong initial
 strategy. The underlying components remain available for advanced use cases.
+
+**Note**: `WatermarkManager` is maintained as an alias for `TableRegistry` for backward compatibility.
 
 ## Usage
 

@@ -1,8 +1,8 @@
 """
-Watermark management for incremental data loading.
+Table registry for managing table metadata, watermarks, and optimization schedules.
 
-Provides utilities to track and manage watermarks (high-water marks) for 
-incremental data pipelines in Microsoft Fabric.
+Provides utilities to track and manage table metadata including watermarks (high-water marks),
+optimization schedules, and write strategies for data pipelines in Microsoft Fabric.
 """
 
 from datetime import datetime, timedelta
@@ -11,30 +11,30 @@ from typing import Any, Optional
 from fabric_utils.setup import setup_control_tables
 
 
-class WatermarkManager:
+class TableRegistry:
     """
-    Manages watermarks for incremental data loading pipelines.
+    Manages table metadata, watermarks, and optimization schedules for data pipelines.
     
-    Watermarks track the last successfully processed value (typically a timestamp
-    or incrementing ID) to enable efficient incremental loading.
+    Replaces WatermarkManager with extended capabilities for table catalog management,
+    optimization scheduling, and write strategy configuration.
     
     Example:
-        >>> wm = WatermarkManager(spark, control_lakehouse="lkhControl", schema="control")
-        >>> watermark = wm.get_watermark("bronze.orders", lookback_days=90)
+        >>> registry = TableRegistry(spark, control_lakehouse="lkhControl", schema="control")
+        >>> watermark = registry.get_watermark("bronze.orders", lookback_days=90)
         >>> if watermark:
         ...     df = spark.sql(f"SELECT * FROM source WHERE modified_at >= '{watermark}'")
-        >>> wm.update_watermark("bronze.orders", new_max_value)
+        >>> registry.update_watermark("bronze.orders", new_max_value)
     """
     
-    def __init__(self, spark, control_lakehouse: str = None, schema: str = "control", table: str = "watermarks"):
+    def __init__(self, spark, control_lakehouse: str = None, schema: str = "control", table: str = "tableRegistry"):
         """
-        Initialize the WatermarkManager.
+        Initialize the TableRegistry.
         
         Args:
             spark: Active SparkSession (provided by Fabric runtime)
             control_lakehouse: Lakehouse name for control tables (e.g., "lkhControl"). If None, uses default attached lakehouse.
             schema: Schema name for control table (default: "control")
-            table: Control table name (default: "watermarks")
+            table: Control table name (default: "tableRegistry")
         """
         self.spark = spark
         self.control_lakehouse = control_lakehouse
@@ -50,8 +50,11 @@ class WatermarkManager:
             self.control_table = f"{schema}.{table}"
             self.full_schema = schema
         
-        # Create control tables if they don't exist
+        # Create control tables if they don't exist (fresh installs)
         self._ensure_control_tables_exist()
+        
+        # Migrate from old watermarks table if needed (upgrades from v0.0.x)
+        self._migrate_from_watermarks_if_needed()
     
     def _ensure_control_tables_exist(self) -> None:
         """
@@ -66,6 +69,57 @@ class WatermarkManager:
             # Only ignore if tables already exist
             if "already exists" not in str(e).lower():
                 raise
+    
+    def _migrate_from_watermarks_if_needed(self) -> None:
+        """
+        Migrate from control.watermarks (v0.0.x) to control.tableRegistry (v0.1.0+).
+        
+        Runs automatically on first use after upgrade. Idempotent and safe to run multiple times.
+        Preserves all existing watermark data and adds new optimization columns.
+        """
+        old_table = f"{self.full_schema}.watermarks"
+        new_table = self.control_table
+        
+        try:
+            has_old = self.spark.catalog.tableExists(old_table)
+            has_new = self.spark.catalog.tableExists(new_table)
+            
+            if has_old and not has_new:
+                print(f"🔄 Migrating {old_table} → {new_table}...")
+                
+                # Create new table with expanded schema from old watermarks data
+                self.spark.sql(f"""
+                    CREATE TABLE {new_table}
+                    USING DELTA
+                    TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')
+                    AS SELECT 
+                        tableName,
+                        COALESCE(createdTs, current_timestamp()) as createdTimestamp,
+                        current_timestamp() as updatedTimestamp,
+                        watermarkValue,
+                        CAST(NULL AS STRING) as watermarkColumn,
+                        0 as lookbackDays,
+                        0 as optimizationScheduleDays,
+                        CAST(NULL AS TIMESTAMP) as lastOptimizedTimestamp,
+                        lastRunId,
+                        lastRunTs as lastRunTimestamp
+                    FROM {old_table}
+                """)
+                
+                # Drop old table (data preserved in new table)
+                self.spark.sql(f"DROP TABLE {old_table}")
+                
+                print(f"✅ Migration complete. {old_table} dropped, data preserved in {new_table}.")
+            
+            elif has_old and has_new:
+                # Both exist - warn but don't break (rare edge case)
+                print(f"⚠️  Both {old_table} and {new_table} exist. Using {new_table}.")
+                print(f"    Consider manually dropping {old_table} if migration is complete.")
+        
+        except Exception as e:
+            # Don't break initialization if migration fails - table might already exist
+            if "already exists" not in str(e).lower():
+                print(f"⚠️  Migration check failed: {e}")
     
     def get_watermark(
         self, 
@@ -138,11 +192,12 @@ class WatermarkManager:
             WHEN MATCHED THEN
                 UPDATE SET 
                     watermarkValue = '{value_str}',
-                    lastRunTs = current_timestamp(),
-                    lastRunId = {run_id_str}
+                    lastRunTimestamp = current_timestamp(),
+                    lastRunId = {run_id_str},
+                    updatedTimestamp = current_timestamp()
             WHEN NOT MATCHED THEN
-                INSERT (tableName, watermarkValue, lastRunTs, lastRunId, createdTs)
-                VALUES ('{table_name}', '{value_str}', current_timestamp(), {run_id_str}, current_timestamp())
+                INSERT (tableName, watermarkValue, lastRunTimestamp, lastRunId, createdTimestamp, updatedTimestamp, lookbackDays, optimizationScheduleDays)
+                VALUES ('{table_name}', '{value_str}', current_timestamp(), {run_id_str}, current_timestamp(), current_timestamp(), 0, 0)
         """)
     
     def build_where_clause(
@@ -163,7 +218,7 @@ class WatermarkManager:
             WHERE clause string, or empty string for initial load
             
         Example:
-            >>> clause = wm.build_where_clause("bronze.orders", "modified_at", 90)
+            >>> clause = registry.build_where_clause("bronze.orders", "modified_at", 90)
             >>> df = spark.sql(f"SELECT * FROM source {clause}")
         """
         watermark = self.get_watermark(table_name, lookback_days)
@@ -183,19 +238,26 @@ class WatermarkManager:
         
         return f"WHERE {column_name} >= '{watermark_str}'"
     
-    def get_watermark_info(self, table_name: str) -> Optional[dict]:
+    def get_table_metadata(self, table_name: str) -> Optional[dict]:
         """
-        Get full watermark metadata for a table.
+        Get full metadata for a table.
         
         Returns:
-            Dict with watermarkValue, lastRunTs, lastRunId, or None
+            Dict with all table metadata, or None if table not registered
         """
         try:
             row = self.spark.sql(f"""
                 SELECT 
+                    tableName,
+                    createdTimestamp,
+                    updatedTimestamp,
                     watermarkValue,
-                    lastRunTs,
-                    lastRunId
+                    watermarkColumn,
+                    lookbackDays,
+                    optimizationScheduleDays,
+                    lastOptimizedTimestamp,
+                    lastRunId,
+                    lastRunTimestamp
                 FROM {self.control_table}
                 WHERE tableName = '{table_name}'
             """).collect()
@@ -203,13 +265,115 @@ class WatermarkManager:
             if not row:
                 return None
             
+            r = row[0]
             return {
-                "watermarkValue": row[0]["watermarkValue"],
-                "lastRunTs": row[0]["lastRunTs"],
-                "lastRunId": row[0]["lastRunId"],
+                "tableName": r["tableName"],
+                "createdTimestamp": r["createdTimestamp"],
+                "updatedTimestamp": r["updatedTimestamp"],
+                "watermarkValue": r["watermarkValue"],
+                "watermarkColumn": r["watermarkColumn"],
+                "lookbackDays": r["lookbackDays"],
+                "optimizationScheduleDays": r["optimizationScheduleDays"],
+                "lastOptimizedTimestamp": r["lastOptimizedTimestamp"],
+                "lastRunId": r["lastRunId"],
+                "lastRunTimestamp": r["lastRunTimestamp"],
             }
         except Exception:
             return None
+    
+    def register_table(
+        self,
+        table_name: str,
+        watermark_column: Optional[str] = None,
+        lookback_days: int = 0,
+        optimization_schedule_days: int = 0,
+    ) -> None:
+        """
+        Register a table with metadata and configuration.
+        
+        Args:
+            table_name: Fully qualified table name (e.g., "bronze.orders")
+            watermark_column: Column name for watermark tracking (e.g., "modified_at")
+            lookback_days: Days to subtract from watermark for late-arriving data
+            optimization_schedule_days: Run OPTIMIZE every N days (0 = disabled)
+        """
+        self.spark.sql(f"""
+            MERGE INTO {self.control_table} AS target
+            USING (SELECT '{table_name}' AS tableName) AS source
+            ON target.tableName = source.tableName
+            WHEN MATCHED THEN
+                UPDATE SET
+                    watermarkColumn = {f"'{watermark_column}'" if watermark_column else "NULL"},
+                    lookbackDays = {lookback_days},
+                    optimizationScheduleDays = {optimization_schedule_days},
+                    updatedTimestamp = current_timestamp()
+            WHEN NOT MATCHED THEN
+                INSERT (tableName, createdTimestamp, updatedTimestamp, watermarkColumn, lookbackDays, optimizationScheduleDays)
+                VALUES ('{table_name}', current_timestamp(), current_timestamp(), 
+                        {f"'{watermark_column}'" if watermark_column else "NULL"}, 
+                        {lookback_days}, {optimization_schedule_days})
+        """)
+    
+    def set_optimization_schedule(self, table_name: str, days: int) -> None:
+        """
+        Set optimization schedule for a table.
+        
+        Args:
+            table_name: Target table name
+            days: Run OPTIMIZE every N days (0 = disabled)
+        """
+        self.spark.sql(f"""
+            UPDATE {self.control_table}
+            SET optimizationScheduleDays = {days},
+                updatedTimestamp = current_timestamp()
+            WHERE tableName = '{table_name}'
+        """)
+    
+    def update_last_optimized(self, table_name: str) -> None:
+        """
+        Update the lastOptimizedTimestamp to current time.
+        
+        Args:
+            table_name: Target table name
+        """
+        self.spark.sql(f"""
+            UPDATE {self.control_table}
+            SET lastOptimizedTimestamp = current_timestamp(),
+                updatedTimestamp = current_timestamp()
+            WHERE tableName = '{table_name}'
+        """)
+    
+    def get_tables_needing_optimization(self) -> list:
+        """
+        Get tables that are due for optimization based on their schedule.
+        
+        Returns:
+            List of dicts with tableName and daysSinceOptimize
+        """
+        try:
+            rows = self.spark.sql(f"""
+                SELECT 
+                    tableName,
+                    optimizationScheduleDays,
+                    lastOptimizedTimestamp,
+                    COALESCE(DATEDIFF(current_timestamp(), lastOptimizedTimestamp), 999999) as daysSinceOptimize
+                FROM {self.control_table}
+                WHERE optimizationScheduleDays > 0
+                  AND (lastOptimizedTimestamp IS NULL 
+                       OR DATEDIFF(current_timestamp(), lastOptimizedTimestamp) >= optimizationScheduleDays)
+                ORDER BY daysSinceOptimize DESC
+            """).collect()
+            
+            return [
+                {
+                    "tableName": r["tableName"],
+                    "optimizationScheduleDays": r["optimizationScheduleDays"],
+                    "daysSinceOptimize": r["daysSinceOptimize"],
+                }
+                for r in rows
+            ]
+        except Exception:
+            return []
     
     def reset_watermark(self, table_name: str) -> None:
         """
@@ -219,21 +383,37 @@ class WatermarkManager:
             table_name: Target table name
         """
         self.spark.sql(f"""
-            DELETE FROM {self.control_table}
+            UPDATE {self.control_table}
+            SET watermarkValue = NULL,
+                updatedTimestamp = current_timestamp()
             WHERE tableName = '{table_name}'
         """)
     
-    def list_watermarks(self) -> list:
+    def list_tables(self, filter_active: bool = True) -> list:
         """
-        List all tracked watermarks.
+        List all registered tables.
+        
+        Args:
+            filter_active: Only return tables with watermarks or optimization enabled
         
         Returns:
-            List of dicts with table_name, watermark_value, last_run_ts
+            List of dicts with table metadata
         """
         try:
+            where_clause = ""
+            if filter_active:
+                where_clause = "WHERE watermarkValue IS NOT NULL OR optimizationScheduleDays > 0"
+            
             rows = self.spark.sql(f"""
-                SELECT tableName, watermarkValue, lastRunTs
+                SELECT 
+                    tableName, 
+                    watermarkValue, 
+                    watermarkColumn,
+                    optimizationScheduleDays,
+                    lastOptimizedTimestamp,
+                    lastRunTimestamp
                 FROM {self.control_table}
+                {where_clause}
                 ORDER BY tableName
             """).collect()
             
@@ -241,12 +421,42 @@ class WatermarkManager:
                 {
                     "tableName": r["tableName"],
                     "watermarkValue": r["watermarkValue"],
-                    "lastRunTs": r["lastRunTs"],
+                    "watermarkColumn": r["watermarkColumn"],
+                    "optimizationScheduleDays": r["optimizationScheduleDays"],
+                    "lastOptimizedTimestamp": r["lastOptimizedTimestamp"],
+                    "lastRunTimestamp": r["lastRunTimestamp"],
                 }
                 for r in rows
             ]
         except Exception:
             return []
+    
+    # Alias for backward compatibility
+    def get_watermark_info(self, table_name: str) -> Optional[dict]:
+        """
+        Get watermark metadata for a table (backward compatibility alias).
+        
+        Returns:
+            Dict with watermarkValue, lastRunTimestamp, lastRunId, or None
+        """
+        metadata = self.get_table_metadata(table_name)
+        if not metadata:
+            return None
+        
+        return {
+            "watermarkValue": metadata["watermarkValue"],
+            "lastRunTimestamp": metadata["lastRunTimestamp"],
+            "lastRunId": metadata["lastRunId"],
+        }
+    
+    def list_watermarks(self) -> list:
+        """
+        List all tracked watermarks (backward compatibility alias).
+        
+        Returns:
+            List of dicts with table_name, watermark_value, lastRunTimestamp
+        """
+        return self.list_tables(filter_active=True)
     
     def log_pipeline_run(
         self,
@@ -311,12 +521,12 @@ class WatermarkManager:
                     rowsDeleted = {rows_deleted if rows_deleted else 'NULL'},
                     durationSeconds = {duration_seconds if duration_seconds else 'NULL'},
                     errorMessage = {f"'{escaped_error}'" if escaped_error else 'NULL'},
-                    completedTs = current_timestamp()
+                    completedTimestamp = current_timestamp()
             WHEN NOT MATCHED THEN
                 INSERT (
                     runId, pipelineName, targetTable, status, strategy,
                     rowsProcessed, rowsInserted, rowsUpdated, rowsDeleted,
-                    durationSeconds, errorMessage, startedTs, completedTs
+                    durationSeconds, errorMessage, startedTimestamp, completedTimestamp
                 )
                 VALUES (
                     '{run_id}', '{pipeline_name}', 
@@ -360,3 +570,7 @@ class WatermarkManager:
                     # Log warning but don't fail the pipeline over audit logging
                     print(f"⚠ WARNING: Could not log pipeline run: {error_str}")
                     return
+
+
+# Backward compatibility alias
+WatermarkManager = TableRegistry

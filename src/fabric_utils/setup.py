@@ -5,10 +5,10 @@ Setup utilities for control tables and schema initialization.
 
 def setup_control_tables(spark, control_lakehouse: str = None, schema: str = "control", silent: bool = False) -> None:
     """
-    Create control tables for watermark tracking.
+    Create control tables for table metadata, watermark tracking, and optimization.
     
     Creates the following tables:
-    - {control_lakehouse}.{schema}.watermarks — Timestamp-based watermark tracking
+    - {control_lakehouse}.{schema}.tableRegistry — Table metadata, watermarks, and optimization config
     - {control_lakehouse}.{schema}.pipelineRuns — Pipeline execution audit log
     
     Args:
@@ -27,14 +27,19 @@ def setup_control_tables(spark, control_lakehouse: str = None, schema: str = "co
     # Create schema if not exists
     spark.sql(f"CREATE SCHEMA IF NOT EXISTS {full_schema}")
     
-    # Watermark tracking table
+    # Table registry (replaces watermarks table)
     spark.sql(f"""
-        CREATE TABLE IF NOT EXISTS {full_schema}.watermarks (
-            tableName       STRING      NOT NULL,
-            watermarkValue  TIMESTAMP,
-            lastRunTs       TIMESTAMP,
-            lastRunId       STRING,
-            createdTs       TIMESTAMP
+        CREATE TABLE IF NOT EXISTS {full_schema}.tableRegistry (
+            tableName                   STRING      NOT NULL,
+            createdTimestamp            TIMESTAMP   NOT NULL,
+            updatedTimestamp            TIMESTAMP   NOT NULL,
+            watermarkValue              TIMESTAMP,
+            watermarkColumn             STRING,
+            lookbackDays                INT,
+            optimizationScheduleDays    INT,
+            lastOptimizedTimestamp      TIMESTAMP,
+            lastRunId                   STRING,
+            lastRunTimestamp            TIMESTAMP
         )
         USING DELTA
         TBLPROPERTIES (
@@ -56,8 +61,8 @@ def setup_control_tables(spark, control_lakehouse: str = None, schema: str = "co
             rowsDeleted         BIGINT,
             durationSeconds     DOUBLE,
             errorMessage        STRING,
-            startedTs           TIMESTAMP,
-            completedTs         TIMESTAMP
+            startedTimestamp    TIMESTAMP,
+            completedTimestamp  TIMESTAMP
         )
         USING DELTA
         TBLPROPERTIES (
@@ -67,6 +72,6 @@ def setup_control_tables(spark, control_lakehouse: str = None, schema: str = "co
     
     if not silent:
         print(f"✓ Control tables created in schema '{full_schema}':")
-        print(f"  - {full_schema}.watermarks")
+        print(f"  - {full_schema}.tableRegistry")
         print(f"  - {full_schema}.pipelineRuns")
 

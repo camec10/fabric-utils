@@ -17,7 +17,7 @@ from fabric_utils.loader import (
     LoadResult,
     WriteStrategy,
 )
-from fabric_utils.watermark import WatermarkManager
+from fabric_utils.registry import TableRegistry
 
 # Sentinel to distinguish "get_watermark() not yet called" from "called and got None"
 _NOT_RETRIEVED = object()
@@ -123,7 +123,7 @@ class Pipeline:
         self.control_schema = control_schema
 
         # Compose — not inherit
-        self.wm = WatermarkManager(spark, control_lakehouse=control_lakehouse, schema=control_schema)
+        self.wm = TableRegistry(spark, control_lakehouse=control_lakehouse, schema=control_schema)
         self.loader = DeltaLoader(
             spark,
             target_table,

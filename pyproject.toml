@@ -4,15 +4,15 @@ build-backend = "hatchling.build"
 
 [project]
 name = "fabric-utils"
-version = "0.0.02"
-description = "Data engineering utilities for Microsoft Fabric: watermarking, strategy assessment, Delta Lake loading, and CDF patterns"
+version = "0.0.03"
+description = "Data engineering utilities for Microsoft Fabric: table registry, watermarking, optimization scheduling, strategy assessment, and Delta Lake loading"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.9"
 authors = [
     { name = "Data Engineering Team" }
 ]
-keywords = ["fabric", "delta-lake", "pyspark", "watermark", "incremental"]
+keywords = ["fabric", "delta-lake", "pyspark", "watermark", "incremental", "optimization", "table-registry"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
